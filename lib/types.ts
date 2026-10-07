@@ -65,6 +65,9 @@ export interface AuditEvent {
   detail?: string;
   actor?: string;
   at: number; // sequence index; deterministic, not wall-clock
+  // The ledger's own timestamp for this event (ISO-8601), present only when the
+  // entry comes from a real ledger event rather than being derived in the UI.
+  ledgerTime?: string;
 }
 
 // A real, immutable AuditRecord contract read back from the ledger (the shape

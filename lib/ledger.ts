@@ -32,7 +32,9 @@ export interface ResilienceLedger {
   openRequest(app: DemoApplication): Promise<void>;
   approve(app: DemoApplication, partyId: string): Promise<void>;
   revoke(app: DemoApplication, partyId: string): Promise<void>;
-  execute(app: DemoApplication, executor: string): Promise<void>;
+  // Returns the ledger's transaction (update) id when the execution committed
+  // to a real ledger; undefined for the in-memory demo.
+  execute(app: DemoApplication, executor: string): Promise<string | undefined>;
   view(app: DemoApplication): Promise<RequestView>;
   // The immutable AuditRecord contracts for this application, oldest first.
   audit(app: DemoApplication): Promise<LedgerAuditRecord[]>;
@@ -101,6 +103,8 @@ class InMemoryLedger implements ResilienceLedger {
       hostingThreshold: app.hostingThreshold,
     });
     this.records.set(app.id, list);
+    // The demo ledger has no transaction id — nothing was submitted anywhere.
+    return undefined;
   }
 
   async view(app: DemoApplication): Promise<RequestView> {
@@ -168,8 +172,11 @@ class HttpLedger implements ResilienceLedger {
     throw new Error('Approvals are append-only on a real ledger');
   }
 
-  async execute(app: DemoApplication, executor: string) {
-    await this.call('execute', app, executor);
+  async execute(app: DemoApplication, executor: string): Promise<string | undefined> {
+    // The route returns the update id from submit-and-wait: the ledger's own
+    // transaction identifier for the execution.
+    const data = await this.call('execute', app, executor);
+    return typeof data.updateId === 'string' ? data.updateId : undefined;
   }
 
   async view(app: DemoApplication): Promise<RequestView> {

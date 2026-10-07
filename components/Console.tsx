@@ -38,6 +38,10 @@ export function Console() {
   const [walletConnected, setWalletConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The ledger's transaction id for the execution made in this session. It is
+  // not part of the AuditRecord (the durable artefact), so it is intentionally
+  // session-scoped: re-reading the ledger recovers the record, not this receipt.
+  const [txId, setTxId] = useState<string | undefined>(undefined);
 
   const app = getApplication(selectedId);
 
@@ -55,6 +59,7 @@ export function Console() {
     let active = true;
     setBusy(true);
     setError(null);
+    setTxId(undefined); // the receipt belongs to the app that was just executed
     ledger
       .openRequest(app)
       .then(() => refresh())
@@ -124,7 +129,8 @@ export function Console() {
     setBusy(true);
     setError(null);
     try {
-      await ledger.execute(app, app.parties[0].id);
+      const id = await ledger.execute(app, app.parties[0].id);
+      setTxId(id);
       await refresh();
     } catch (e) {
       setError(errorMessage(e));
@@ -135,6 +141,7 @@ export function Console() {
   const reset = async () => {
     setBusy(true);
     setError(null);
+    setTxId(undefined);
     try {
       // On a real ledger there is no reset — just re-read current state.
       if (!isLive) await ledger.openRequest(app);
@@ -151,7 +158,9 @@ export function Console() {
   const available = isAvailable(app, state);
   const need = app.threshold - approvals.length;
   const blockReason = executed
-    ? 'Executed and recorded on the ledger'
+    ? txId
+      ? `Recorded on the ledger · tx ${txId.slice(0, 16)}…`
+      : 'Executed and recorded on the ledger'
     : !met
     ? `Needs ${need} more approval${need === 1 ? '' : 's'}`
     : !available

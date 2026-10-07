@@ -86,6 +86,8 @@ export const buildAudit = (
         label: `${r.verb} executed`,
         detail: `On-ledger AuditRecord · ${r.reference} · quorum ${r.approvals.length}/${app.parties.length}${hosting}`,
         actor: nameOf(r.executor),
+        // The ledger's timestamp for the record — not a UI clock.
+        ledgerTime: r.timestamp,
       });
     }
   } else if (s.executed) {
