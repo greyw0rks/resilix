@@ -50,16 +50,46 @@ applications — Treasury (2/3), Token Administration (3/4), Trading Administrat
 (2/3), Protocol Governance (3/5) — defined in `lib/applications.ts`. Switching
 apps in the console switches the on-ledger `Policy` it drives.
 
+## The wallet is in the flow, not next to it
+
+`lib/wallet.ts` is an adapter over the browser-side **Canton dApp SDK**
+(`@canton-network/dapp-sdk`, CIP-0103) — the standard a Canton wallet such as
+**Grofty** implements. It discovers an installed wallet, silently restores an
+already-approved session, connects on request, reads the Canton party the wallet
+holds, and hands the wallet a command to **sign and submit itself**
+(`prepareExecuteAndWait`).
+
+What makes that more than a connect button is `prepare`: `app/api/ledger/route.ts`
+can return the *exact command it would otherwise submit*, together with the party
+that command must be authorized by — without submitting it. The console then gives
+that command to the wallet whenever the connected party is the one holding the
+authority (`components/Console.tsx`, `submitViaWallet`). So the approval and the
+execution are authorized by the user's own party on the ledger, not by a server
+asserting it is that party. The connection state is the SDK's, not a local boolean:
+a rejected connection, an expired session and a missing wallet are distinguished
+and reported to the user as such.
+
+**The one honest constraint.** A Canton wallet signs against the network *its own
+validator* is on. A LocalNet sandbox is not that network, so during the local demo
+no installed wallet can submit to it — the authority check above is false and the
+server route submits instead, exactly as before. Point the app at a network the
+wallet is on and the wallet path takes over with no code change. Where a browser has
+no Canton wallet installed at all, the console offers an explicitly-labelled demo
+signer (`real = false`, a visible banner, no signature produced) so the demo stays
+runnable; nothing about it can be mistaken for real signing.
+
+## Deliberately not here: a treasury balance
+
+The console shows no account balance, and there is no balance anywhere in the
+contracts. That is a boundary, not an omission: this layer governs *who may act
+and whether the application is reachable to act*, not custody. The reference
+treasury action — "Send 50,000 CC" — is a **request the policy authorizes**, not a
+transfer out of an escrowed balance, so there is no quantity to hold or display.
+Adding custody would mean a second product (a vault) that this control layer would
+then protect, which is exactly the post-MVP shape the boundary excludes.
+
 ## Honest seams (intentionally not faked)
 
-These require infrastructure that is not publicly installable; they are wired as
-clean seams rather than mocked as "done":
-
-- **Grofty signing** — `lib/wallet.ts` defines the `WalletAdapter` seam. There is
-  no public Grofty SDK; the real adapter is the browser-side **Canton dApp SDK**
-  (`@canton-network/dapp-sdk`, CIP-0103: `connect()` → `listAccounts()` →
-  `prepareExecuteAndWait`), which needs a wallet extension installed and a
-  reachable validator. The demo uses `DemoWallet` (`real = false`).
 - **BitSafe Decentralization Manager / real multi-operator deployment** — the
   `HostingGroup` contract models the *status* of the operator set (who hosts the
   app, how many must be online, who is down) and `Execute` enforces the threshold

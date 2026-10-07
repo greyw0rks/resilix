@@ -21,6 +21,24 @@ BitSafe Decentralization Manager
 Canton Network (settlement · privacy)
 ```
 
+## Where the wallet sits
+
+The browser side of the top arrow is `lib/wallet.ts`, an adapter over the **Canton dApp SDK**
+(`@canton-network/dapp-sdk`, CIP-0103) — the interface a Canton wallet like Grofty implements:
+
+```
+connect()              →  discovers the wallet, restores an approved session, connects
+listAccounts()         →  the Canton party the wallet actually holds
+prepare (server route) →  the command the route would have submitted, returned unsubmitted
+prepareExecuteAndWait  →  the wallet signs and submits that command itself
+```
+
+The console takes the wallet path only when the party the command must be authorized by is the
+one the wallet holds, so the approval and the execution carry the user's own authority instead of
+the server's claim to it. A wallet signs against the network its own validator is on, which a
+LocalNet sandbox is not — there the check is false and the server route submits, and a browser
+with no Canton wallet at all can opt into an explicitly-labelled demo signer.
+
 ## Reusable, not treasury-specific
 
 The control layer is application-agnostic. Every protected application is the same shape —

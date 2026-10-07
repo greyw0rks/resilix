@@ -86,6 +86,13 @@ The header status now reads **json-api**. Every approval, operator status report
 and execution is a real `ActionRequest.Approve` / `HostingGroup.ReportOffline` /
 `ActionRequest.Execute` choice on the ledger.
 
+**On "Connect Grofty" here.** A Canton wallet signs against the network *its own
+validator* is on, and this sandbox is not that network — so on LocalNet the console
+submits through the server route even with a wallet connected, and a browser with
+no Canton wallet can opt into the explicitly-labelled demo signer. The wallet path
+(`lib/wallet.ts`, over the Canton dApp SDK) engages automatically when the app is
+pointed at a network the wallet holds a party on; nothing needs changing to switch.
+
 ## 4. Verify the workflow
 
 Automated — the whole control layer, asserted against the live ledger:

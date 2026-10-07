@@ -51,7 +51,7 @@ components/     Console (state + ledger), Hero, ApplicationSwitcher, SharedContr
                 DistributedHosting, AuditTrail, Architecture, icons, ui (primitives)
 lib/            types.ts (domain), applications.ts (the four apps),
                 engine.ts (pure policy/hosting/audit), ledger.ts (ledger client),
-                wallet.ts (Grofty signing seam)
+                wallet.ts (wallet adapter over the Canton dApp SDK)
 daml/           daml.yaml + reusable Policy / ActionRequest / AuditRecord contracts
                 and HostingGroup (operator status), Test.daml (acceptance tests),
                 Init.daml (LocalNet bootstrap)
@@ -111,8 +111,31 @@ pillars is at **`/demo`** (runs on the in-memory model, so it always plays).
 3. Take a hosting operator offline — it reports itself down on-ledger, and the application
    stays available while the hosting threshold still permits operation. Drop below the
    threshold and Execute is refused *by the ledger*, not by the console.
-4. Connect Grofty and execute the action.
+4. Connect a Canton wallet (Grofty). The console reads the party it holds and routes the
+   approval and the execution through the wallet to sign — whenever the wallet is on a network
+   the app is pointed at. See *The wallet* below.
 5. Read the audit trail: request → approvals → hosting change → execution.
+
+## The wallet
+
+`lib/wallet.ts` adapts the browser-side **Canton dApp SDK** (`@canton-network/dapp-sdk`,
+CIP-0103) — the standard a wallet like Grofty implements — so the privileged action is
+authorized by the user's own Canton party rather than by a server claiming to be it:
+
+```
+connect()  →  listAccounts()  →  the Canton party the wallet holds
+prepare    →  the exact command the server route would have submitted, unsubmitted
+submit     →  prepareExecuteAndWait(): the wallet signs and submits it
+```
+
+The console only takes the wallet path when the party the command must be authorized by is the
+party the wallet actually holds; otherwise the server route runs as before. A browser with no
+Canton wallet installed can opt into an explicitly-labelled demo signer (`real = false`, banner
+shown, no signature produced) so the demo stays runnable.
+
+One honest constraint: a Canton wallet signs against the network **its own validator** is on, so
+against a LocalNet sandbox no installed wallet can submit to it — that is the authority check
+being false, and the server route submitting instead, not a broken integration.
 
 ## Integration status
 
@@ -121,7 +144,7 @@ pillars is at **`/demo`** (runs on the in-memory model, so it always plays).
 | Daml package + LocalNet | ✅ built, deployed to a live sandbox, acceptance tests green |
 | Console reads/submits | ✅ every approval, hosting report and execution is a real Daml command |
 | Shared-control + node-failure demonstrations | ✅ reproduced on LocalNet by `npm run verify:ledger` |
-| Grofty signing | 🔌 seam (`lib/wallet.ts`) — the real path is the Canton dApp SDK |
+| Grofty wallet | ✅ adapter over the Canton dApp SDK — connect, read the party, sign and submit through the wallet (`prepareExecuteAndWait`); needs a network the wallet is on |
 | Decentralization Manager (Decentralized Party, real node topology) | 🔌 BitSafe infrastructure, not self-serve |
 
 **For Gold:** move the working application onto DevNet/MainNet and complete the BitSafe
