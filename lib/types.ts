@@ -23,6 +23,9 @@ export interface HostingNode {
   id: string;
   label: string;
   operator: string;
+  // Slug of the allocated Canton party that hosts this node (see
+  // daml/Init.daml + LEDGER_PARTY_MAP). Each operator reports its own status.
+  slug: string;
 }
 
 export interface ProtectedAction {
@@ -73,4 +76,6 @@ export interface LedgerAuditRecord {
   reference: string;
   approvals: string[]; // approver slugs, in the order recorded on-ledger
   executor: string; // slug of the party that executed
+  onlineOperators?: number; // online operators at execution time
+  hostingThreshold?: number; // hosting threshold at execution time
 }

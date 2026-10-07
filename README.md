@@ -14,7 +14,8 @@ Canton application become unavailable?**
 
 - **Policy** — define approval thresholds per application.
 - **Governance** — multiple parties must approve a privileged action (shared control).
-- **Resilience** — the application stays available when a hosting operator disappears (distributed hosting).
+- **Resilience** — hosting operators report their own node status on-ledger, and an application
+  below its hosting threshold cannot execute (distributed hosting, enforced by the contract).
 - **Audit** — every request, approval, hosting change and execution is traceable.
 
 ## Switchable reference applications
@@ -32,13 +33,15 @@ The same decentralization layer protects different actions. The demo switches be
 
 ```
 Grofty                → user interaction, wallet, signing
-Canton Resilience     → policy · approval · audit engines   (this project)
-Decentralization Mgr  → Decentralized Party · operators      (BitSafe)
+Canton Resilience     → policy · approval · hosting · audit engines   (this project)
+Decentralization Mgr  → Decentralized Party · operators               (BitSafe)
 Canton Network        → settlement · privacy
 ```
 
-Canton Resilience owns application policy and workflow. It does **not** reimplement the
-Decentralization Manager, which owns the decentralized-party/operator infrastructure.
+Canton Resilience owns application policy and workflow. It models the *status* of the hosting
+operator set on-ledger (who hosts an application, how many must be online, who is down) and
+enforces the availability gate in `Execute`. The Decentralized Party and the real distributed
+node topology are the Decentralization Manager's; this project does **not** reimplement them.
 
 ## Project layout
 
@@ -49,8 +52,9 @@ components/     Console (state + ledger), Hero, ApplicationSwitcher, SharedContr
 lib/            types.ts (domain), applications.ts (the four apps),
                 engine.ts (pure policy/hosting/audit), ledger.ts (ledger client),
                 wallet.ts (Grofty signing seam)
-daml/           daml.yaml + reusable Policy / ActionRequest / AuditRecord contracts,
-                Test.daml (acceptance tests), Init.daml (LocalNet bootstrap)
+daml/           daml.yaml + reusable Policy / ActionRequest / AuditRecord contracts
+                and HostingGroup (operator status), Test.daml (acceptance tests),
+                Init.daml (LocalNet bootstrap)
 app/api/ledger/ server route that bridges the browser to the Canton JSON API v1
 scripts/        localnet.sh — one-command LocalNet bring-up
 docs/           ARCHITECTURE.md, LOCALNET.md, SUBMISSION.md
@@ -68,7 +72,8 @@ The UI is built with **Tailwind CSS v4** (CSS-first config in `app/globals.css`,
 
 `lib/engine.ts` mirrors the Daml choices in `daml/Main.daml`, so the same policy/hosting/audit
 logic maps onto a real ledger. In live mode the audit trail is **read back from the on-ledger
-`AuditRecord` contracts** (via the `audit` op), not reconstructed in the UI — see
+`AuditRecord` contracts** (via the `audit` op) and the hosting panel is **read back from the
+application's `HostingGroup`** (via the `hosting` op) — neither is reconstructed in the UI. See
 **[docs/SUBMISSION.md](docs/SUBMISSION.md)** for what is on-ledger vs. an intentional seam.
 
 ## Daml package + LocalNet
@@ -101,7 +106,9 @@ pillars is at **`/demo`** (runs on the in-memory model, so it always plays).
 
 1. Pick a reference application. Every privileged action sits behind the same layer.
 2. Approve as parties until the quorum is met (shared control).
-3. Toggle a hosting operator offline — the application remains available (distributed hosting).
+3. Take a hosting operator offline — it reports itself down on-ledger, and the application
+   stays available while the hosting threshold still permits operation. Drop below the
+   threshold and Execute is refused *by the ledger*, not by the console.
 4. Connect Grofty and execute the action.
 5. Read the audit trail: request → approvals → hosting change → execution.
 

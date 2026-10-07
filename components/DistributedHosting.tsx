@@ -10,11 +10,13 @@ export function DistributedHosting({
   offlineNodes,
   locked,
   onToggle,
+  note,
 }: {
   app: DemoApplication;
   offlineNodes: string[];
   locked: boolean;
   onToggle: (nodeId: string) => void;
+  note?: string;
 }) {
   const s = { approvals: [], offlineNodes, walletConnected: false, executed: false };
   const available = isAvailable(app, s);
@@ -33,6 +35,10 @@ export function DistributedHosting({
         Hosted by {app.hostingNodes.length} independent operators. Stays available while at least{' '}
         {app.hostingThreshold} remain online.
       </p>
+
+      {note && (
+        <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">{note}</p>
+      )}
 
       <div className="mt-4 space-y-2">
         {app.hostingNodes.map((n) => {

@@ -73,12 +73,18 @@ export const buildAudit = (
   }
 
   if (records.length > 0) {
-    // Authoritative: one entry per immutable AuditRecord on the ledger.
+    // Authoritative: one entry per immutable AuditRecord on the ledger. The
+    // hosting state captured at execution time is part of the record, so the
+    // trail shows the resilience fact alongside the quorum.
     for (const r of records) {
+      const hosting =
+        r.onlineOperators != null && r.hostingThreshold != null
+          ? ` · ${r.onlineOperators}/${app.hostingNodes.length} operators online`
+          : '';
       push({
         kind: 'executed',
         label: `${r.verb} executed`,
-        detail: `On-ledger AuditRecord · ${r.reference} · quorum ${r.approvals.length}/${app.parties.length}`,
+        detail: `On-ledger AuditRecord · ${r.reference} · quorum ${r.approvals.length}/${app.parties.length}${hosting}`,
         actor: nameOf(r.executor),
       });
     }

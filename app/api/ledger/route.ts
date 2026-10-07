@@ -67,6 +67,12 @@ function deQualify(party: string): string {
   return hit ? hit[0] : party;
 }
 
+// Map an allocated hosting-operator party back to the UI node id ('a', 'b', …).
+function nodeIdOf(app: DemoApplication, party: string): string {
+  const slug = deQualify(party);
+  return app.hostingNodes.find((n) => n.slug === slug)?.id ?? slug;
+}
+
 async function jsonApi(party: string, path: string, body: unknown): Promise<any> {
   const res = await fetch(`${LEDGER_URL}${path}`, {
     method: 'POST',
@@ -98,6 +104,11 @@ function ledgerError(body: any): string | undefined {
   if (/already approved/i.test(raw)) return 'This party has already approved';
   if (/threshold not met/i.test(raw)) return 'Approval threshold not met';
   if (/requester must be/i.test(raw)) return 'Requester is not a policy member';
+  if (/hosting below threshold/i.test(raw)) return 'Application unavailable — hosting below threshold';
+  if (/hosting contract belongs to a different/i.test(raw)) return 'Hosting contract belongs to a different application';
+  if (/not a hosting operator/i.test(raw)) return 'Not a hosting operator for this application';
+  if (/already offline/i.test(raw)) return 'Operator is already offline';
+  if (/already online/i.test(raw)) return 'Operator is already online';
   return raw;
 }
 
@@ -137,7 +148,48 @@ async function auditApp(app: DemoApplication) {
     reference: p.reference,
     approvals: ((p.approvals ?? []) as string[]).slice().reverse().map(deQualify),
     executor: deQualify(p.executor),
+    // The JSON API v1 encodes Int64 as a JSON *string*; convert back to number.
+    onlineOperators: p.onlineOperators == null ? undefined : Number(p.onlineOperators),
+    hostingThreshold: p.hostingThreshold == null ? undefined : Number(p.hostingThreshold),
   }));
+}
+
+// Read the application's HostingGroup: which operators are down, whether the
+// application is still available. Availability is a property of the ledger
+// contract (Execute enforces the same computation), not of the UI.
+async function findHosting(appName: string, reader: string) {
+  const rows = await query(reader, tid('HostingGroup'), { application: appName });
+  return rows[0];
+}
+
+async function hostingApp(app: DemoApplication) {
+  const reader = qualify(app.parties[0].id);
+  const group = await findHosting(app.name, reader);
+  if (!group)
+    throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh to initialize`);
+  const offline = ((group.payload.offline ?? []) as string[]).map((p) => nodeIdOf(app, p));
+  // Int64 arrives as a JSON string over JSON API v1.
+  const threshold = Number(group.payload.threshold);
+  const online = app.hostingNodes.length - offline.length;
+  return { offline, online, threshold, available: online >= threshold };
+}
+
+// Report an operator's own node state. Submitted as that operator's party —
+// the ledger's ReportOffline/ReportOnline choices are controlled by the node
+// itself, so no admin asserts on a node's behalf.
+async function setNodeHosting(app: DemoApplication, nodeId: string, online: boolean) {
+  const node = app.hostingNodes.find((n) => n.id === nodeId);
+  if (!node) throw new Error('Not a hosting operator for this application');
+  const nodeParty = qualify(node.slug);
+  const group = await findHosting(app.name, node.slug);
+  if (!group)
+    throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh to initialize`);
+  await jsonApi(nodeParty, '/v1/exercise', {
+    templateId: tid('HostingGroup'),
+    contractId: group.contractId,
+    choice: online ? 'ReportOnline' : 'ReportOffline',
+    argument: { node: nodeParty },
+  });
 }
 
 // Ensure a pending ActionRequest exists for the app; create one from the
@@ -167,7 +219,16 @@ async function exerciseOnRequest(app: DemoApplication, actorSlug: string, choice
   const actor = qualify(actorSlug);
   const req = await findRequest(app.name, actor);
   if (!req) throw new Error(`No open request for "${app.name}"`);
-  const argument = choice === 'Approve' ? { approver: actor } : { executor: actor };
+  // Execute must name the application's live HostingGroup; the choice checks
+  // that it belongs to this application and that enough operators are online.
+  let argument: Record<string, unknown>;
+  if (choice === 'Approve') {
+    argument = { approver: actor };
+  } else {
+    const group = await findHosting(app.name, actor);
+    if (!group) throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh`);
+    argument = { executor: actor, hostingGroup: group.contractId };
+  }
   await jsonApi(actor, '/v1/exercise', {
     templateId: tid('ActionRequest'),
     contractId: req.contractId,
@@ -180,7 +241,7 @@ export async function POST(req: NextRequest) {
   if (!LEDGER_URL) {
     return NextResponse.json({ error: 'LEDGER_URL is not configured on the server' }, { status: 503 });
   }
-  let body: { op?: string; appId?: string; partyId?: string };
+  let body: { op?: string; appId?: string; partyId?: string; nodeId?: string; online?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -202,6 +263,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, view: await viewApp(app) });
       case 'audit':
         return NextResponse.json({ ok: true, records: await auditApp(app) });
+      case 'hosting':
+        return NextResponse.json({ ok: true, hosting: await hostingApp(app) });
+      case 'hostingSet':
+        await setNodeHosting(app, body.nodeId ?? '', body.online === true);
+        return NextResponse.json({ ok: true });
       default:
         return NextResponse.json({ error: `Unknown op "${body.op}"` }, { status: 400 });
     }

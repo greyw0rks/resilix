@@ -6,8 +6,9 @@ import Main
 {-
   LocalNet bootstrap for Canton Resilience.
 
-  Allocates the demo parties and creates one Policy per reference application
-  (mirroring lib/applications.ts), then returns the allocated party ids so the
+  Allocates the demo parties and creates one HostingGroup and one Policy per
+  reference application (mirroring lib/applications.ts), then returns the
+  allocated party ids — including the hosting-operator parties — so the
   bring-up script (scripts/localnet.sh) can write NEXT_PUBLIC_PARTY_MAP for the
   frontend. Run with:
 
@@ -39,6 +40,33 @@ initialize = do
   dave <- allocatePartyWithHint "Dave" (PartyIdHint "Dave")
   erin <- allocatePartyWithHint "Erin" (PartyIdHint "Erin")
 
+  -- Hosting operators (mirrors lib/applications.ts hostingNodes). These are
+  -- real parties: each one reports its own node state through HostingGroup.
+  opAlpha <- allocatePartyWithHint "OperatorAlpha" (PartyIdHint "OperatorAlpha")
+  opBeta <- allocatePartyWithHint "OperatorBeta" (PartyIdHint "OperatorBeta")
+  opGamma <- allocatePartyWithHint "OperatorGamma" (PartyIdHint "OperatorGamma")
+  opDelta <- allocatePartyWithHint "OperatorDelta" (PartyIdHint "OperatorDelta")
+  opEpsilon <- allocatePartyWithHint "OperatorEpsilon" (PartyIdHint "OperatorEpsilon")
+
+  let smallNodes = [opAlpha, opBeta, opGamma]                     -- Nodes A/B/C
+  let largeNodes = [opAlpha, opBeta, opGamma, opDelta, opEpsilon] -- Nodes A–E
+
+  -- One HostingGroup per reference application, created before its Policy so
+  -- the group is live for the app's whole lifetime. All nodes start online.
+  -- The frontend finds them by `application` (see app/api/ledger/route.ts).
+  _ <- submit operator $ createCmd HostingGroup with
+    operator; members = [alice, bob, carol]; application = "Treasury"
+    nodes = smallNodes; threshold = 2; offline = []
+  _ <- submit operator $ createCmd HostingGroup with
+    operator; members = [alice, bob, carol, dave]; application = "Token Administration"
+    nodes = smallNodes; threshold = 2; offline = []
+  _ <- submit operator $ createCmd HostingGroup with
+    operator; members = [alice, bob, carol]; application = "Trading Administration"
+    nodes = smallNodes; threshold = 2; offline = []
+  _ <- submit operator $ createCmd HostingGroup with
+    operator; members = [alice, bob, carol, dave, erin]; application = "Protocol Governance"
+    nodes = largeNodes; threshold = 3; offline = []
+
   -- One Policy per reference application (matches lib/applications.ts).
   _ <- submit operator $ createCmd Policy with
     operator; members = [alice, bob, carol]; threshold = 2
@@ -53,6 +81,7 @@ initialize = do
     operator; members = [alice, bob, carol, dave, erin]; threshold = 3
     application = "Protocol Governance"
 
+  -- Return the party map so the frontend can resolve UI slugs to parties.
   pure LedgerInit with
     operator
     parties =
@@ -61,4 +90,9 @@ initialize = do
       , PartyEntry "carol" carol
       , PartyEntry "dave" dave
       , PartyEntry "erin" erin
+      , PartyEntry "opalpha" opAlpha
+      , PartyEntry "opbeta" opBeta
+      , PartyEntry "opgamma" opGamma
+      , PartyEntry "opdelta" opDelta
+      , PartyEntry "opepsilon" opEpsilon
       ]

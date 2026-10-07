@@ -11,9 +11,14 @@ import DA.List (unique)
 
   The action is deliberately generic (verb + target + detail) so the same
   contracts protect a treasury transfer, a token mint, a fee change or a
-  protocol pause. The Decentralized Party / operator hosting layer lives
-  outside these business contracts and is wired through BitSafe's
-  Decentralization Manager.
+  protocol pause.
+
+  Distributed hosting is modelled by HostingGroup: the set of operator parties
+  running an application and the minimum number that must stay online. Each
+  operator reports its own node state, and Execute refuses to run while the
+  application is under-hosted — so availability is enforced on the ledger, not
+  in the UI. The *real* multi-participant node topology is BitSafe's
+  Decentralization Manager's job and stays a documented seam.
 -}
 
 -- | Shared-control policy: a named quorum over a set of parties.
@@ -84,17 +89,37 @@ template ActionRequest
         assertMsg "Approver has already approved" (approver `notElem` approvals)
         create this with approvals = approver :: approvals
 
-    -- Execute once the approval threshold is met; emits an audit record.
+    -- Execute once the approval threshold is met AND the application is
+    -- adequately hosted; emits an audit record.
+    --
+    -- `hostingGroup` is the application's live HostingGroup contract id. It is
+    -- an argument rather than a field because ReportOffline/ReportOnline
+    -- consume and recreate that contract, so any id stored here would go stale
+    -- on the first status change. Accepting it as an argument cannot be used to
+    -- bypass the gate: exactly one HostingGroup is live per application (only
+    -- the control-plane operator — the signatory — can create one, and every
+    -- status report consumes the old one), and the choice re-checks that the
+    -- fetched group is the one for this application.
     choice Execute : ContractId AuditRecord
-      with executor : Party
+      with
+        executor : Party
+        hostingGroup : ContractId HostingGroup
       controller executor
       do
         assertMsg "Executor is not a policy member" (executor `elem` members)
         assertMsg "Approval threshold not met" (length approvals >= threshold)
+        hosting <- fetch hostingGroup
+        assertMsg "Hosting contract belongs to a different application"
+          (hosting.application == application)
+        let online = length hosting.nodes - length hosting.offline
+        assertMsg "Hosting below threshold — application unavailable"
+          (online >= hosting.threshold)
         create AuditRecord with
           operator; members; application
           verb; target; detail; reference
           approvals; executor
+          onlineOperators = online
+          hostingThreshold = hosting.threshold
 
     -- Withdraw a pending request. The policy operator can always reject; the
     -- original requester can withdraw their own request. Archives the request
@@ -107,7 +132,9 @@ template ActionRequest
           (canceller == operator || canceller == requester)
         pure ()
 
--- | Immutable trace of an executed action.
+-- | Immutable trace of an executed action. `onlineOperators` / `hostingThreshold`
+-- capture the hosting state at the moment of execution, so the resilience fact
+-- is part of the record rather than a UI annotation.
 template AuditRecord
   with
     operator : Party
@@ -119,6 +146,60 @@ template AuditRecord
     reference : Text
     approvals : [Party]
     executor : Party
+    onlineOperators : Int
+    hostingThreshold : Int
   where
     signatory operator
     observer members
+
+-- | Distributed hosting: the operator parties running an application and the
+-- minimum number that must stay online for it to remain available.
+--
+-- Each hosting operator reports its *own* node state (controller = that node),
+-- which keeps the signal decentralized: no admin asserts on a node's behalf.
+-- A non-operator cannot even see the contract (observers are the members and
+-- the nodes), so an outsider is blocked by invisibility before the explicit
+-- membership assertion is reachable — the same pattern as ActionRequest.
+template HostingGroup
+  with
+    operator : Party        -- control-plane operator, administers the group
+    members : [Party]       -- policy members; observers so hosting health is visible to them
+    application : Text
+    nodes : [Party]         -- hosting-operator parties
+    threshold : Int         -- minimum online operators to remain available
+    offline : [Party]       -- subset of nodes currently reported down
+  where
+    signatory operator
+    -- Members and nodes are both observers: policy members can see the
+    -- application's hosting health, and operators can see (and report on) the
+    -- group. The `ensure` below keeps the operator out of both lists, so a
+    -- party is never both signatory and observer.
+    observer (members ++ nodes)
+
+    ensure not (null nodes)
+        && unique nodes
+        && threshold > 0
+        && threshold <= length nodes
+        && all (\n -> n `elem` nodes) offline
+        && unique offline
+        && operator `notElem` members
+        && operator `notElem` nodes
+
+    -- An operator declares its own node down (graceful withdrawal or an
+    -- operator taking infrastructure out of service).
+    choice ReportOffline : ContractId HostingGroup
+      with node : Party
+      controller node
+      do
+        assertMsg "Not a hosting operator for this application" (node `elem` nodes)
+        assertMsg "Operator is already offline" (node `notElem` offline)
+        create this with offline = node :: offline
+
+    -- ...and back online.
+    choice ReportOnline : ContractId HostingGroup
+      with node : Party
+      controller node
+      do
+        assertMsg "Not a hosting operator for this application" (node `elem` nodes)
+        assertMsg "Operator is already online" (node `elem` offline)
+        create this with offline = filter (/= node) offline
