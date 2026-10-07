@@ -7,7 +7,7 @@ import type { DemoApplication, LedgerAuditRecord } from './types';
 // choices in daml/Main.daml so the demo runs with no external dependency,
 // and `HttpLedger` is a drop-in that proxies the same operations through the
 // same-origin Next.js route (app/api/ledger/route.ts), which submits them to
-// a real Canton participant over the Daml HTTP JSON API v1.
+// a real Canton participant over the Daml JSON Ledger API v2 (Canton 3.x).
 //
 // Approvals are append-only, matching the ledger: `ActionRequest.Approve`
 // creates a new contract state, it never "un-approves". `revoke` exists only
@@ -131,11 +131,11 @@ class InMemoryLedger implements ResilienceLedger {
   }
 }
 
-// --- HTTP proxy implementation (Daml JSON API v1, via /api/ledger) ---------
+// --- HTTP proxy implementation (JSON Ledger API v2, via /api/ledger) -------
 // Active when NEXT_PUBLIC_LEDGER_MODE=json-api. The browser only ever talks to
-// the same-origin Next.js route app/api/ledger/route.ts, which owns the JWT
-// minting and Canton participant connection. Approvals are append-only here,
-// exactly as on the ledger — there is no `revoke`.
+// the same-origin Next.js route app/api/ledger/route.ts, which owns the
+// connection to the Canton participant. Approvals are append-only here, exactly
+// as on the ledger — there is no `revoke`.
 
 class HttpLedger implements ResilienceLedger {
   readonly kind = 'json-api' as const;

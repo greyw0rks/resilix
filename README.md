@@ -55,7 +55,7 @@ lib/            types.ts (domain), applications.ts (the four apps),
 daml/           daml.yaml + reusable Policy / ActionRequest / AuditRecord contracts
                 and HostingGroup (operator status), Test.daml (acceptance tests),
                 Init.daml (LocalNet bootstrap)
-app/api/ledger/ server route that bridges the browser to the Canton JSON API v1
+app/api/ledger/ server route that bridges the browser to the Daml JSON Ledger API v2
 scripts/        localnet.sh — one-command LocalNet bring-up
 docs/           ARCHITECTURE.md, LOCALNET.md, SUBMISSION.md
 ```
@@ -67,8 +67,9 @@ The UI is built with **Tailwind CSS v4** (CSS-first config in `app/globals.css`,
   runs with no external dependency.
 - **`HttpLedger`** proxies the same operations through the same-origin server route
   `app/api/ledger/route.ts`, which submits real Daml commands to a Canton participant over the
-  **HTTP JSON API v1** (Daml 2.x). The browser holds no token and there is no CORS to configure.
-  Activate it by running against LocalNet (`npm run ledger:up`), which sets `NEXT_PUBLIC_LEDGER_MODE`.
+  **Daml JSON Ledger API v2** (Canton 3.x). The browser holds no token and there is no CORS to
+  configure. Activate it by running against LocalNet (`npm run ledger:up`), which sets
+  `NEXT_PUBLIC_LEDGER_MODE`.
 
 `lib/engine.ts` mirrors the Daml choices in `daml/Main.daml`, so the same policy/hosting/audit
 logic maps onto a real ledger. In live mode the audit trail is **read back from the on-ledger
@@ -83,13 +84,14 @@ for the one-time toolchain install and details. In short:
 
 ```bash
 cd daml && daml build && daml test   # compile contracts + run acceptance tests
-npm run ledger:up                     # sandbox + JSON API v1 + parties + policies, writes .env.local
+npm run ledger:up                     # sandbox + JSON Ledger API v2 + parties + policies, writes .env.local
 npm run verify:ledger                 # drive request→approve→execute on the live ledger, assert invariants
 npm run dev                           # http://localhost:3000, now backed by the ledger
 ```
 
-> Targets the freely-distributed **Daml 2.10.6** SDK (HTTP JSON API v1). Daml 3.x / Canton 3.x
-> with the JSON Ledger API v2 is distributed only through Digital Asset's Canton Network channels.
+> Targets the **Daml 3.x / Canton 3.x** SDK, whose sandbox serves the **Daml JSON Ledger API
+> v2** itself (the 2.x `daml json-api` process no longer exists, and a 2.x-built DAR cannot be
+> hosted by a 3.x participant).
 
 ## Run the UI
 
@@ -112,12 +114,16 @@ pillars is at **`/demo`** (runs on the in-memory model, so it always plays).
 4. Connect Grofty and execute the action.
 5. Read the audit trail: request → approvals → hosting change → execution.
 
-## Canton integration plan
+## Integration status
 
-1. Compile and deploy the Daml package to LocalNet.
-2. Replace mock console state with Canton ledger reads/submissions.
-3. Add Grofty through the Canton wallet/dApp SDK boundary.
-4. Integrate the Decentralization Manager for the Decentralized Party and operator topology.
-5. Reproduce shared-control and node-failure demonstrations on LocalNet (contribution path).
-6. For Gold: move the working application to DevNet/MainNet and complete the BitSafe
-   Decentralized Party deployment.
+| Layer | State |
+| ----- | ----- |
+| Daml package + LocalNet | ✅ built, deployed to a live sandbox, acceptance tests green |
+| Console reads/submits | ✅ every approval, hosting report and execution is a real Daml command |
+| Shared-control + node-failure demonstrations | ✅ reproduced on LocalNet by `npm run verify:ledger` |
+| Grofty signing | 🔌 seam (`lib/wallet.ts`) — the real path is the Canton dApp SDK |
+| Decentralization Manager (Decentralized Party, real node topology) | 🔌 BitSafe infrastructure, not self-serve |
+
+**For Gold:** move the working application onto DevNet/MainNet and complete the BitSafe
+Decentralized Party deployment, which is what turns the hosting layer from a modelled operator
+set into a genuinely distributed one.

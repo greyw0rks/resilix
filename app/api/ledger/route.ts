@@ -2,33 +2,43 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getApplication } from '@/lib/applications';
 import type { DemoApplication } from '@/lib/types';
 
-// Server-side bridge to a Canton participant's Daml HTTP JSON API v1 (Daml 2.x).
+// Server-side bridge to a Canton participant's Daml JSON Ledger API **v2**
+// (Canton/Daml 3.x). Verified against a live 3.x sandbox — see docs/LOCALNET.md.
 //
 // Why this lives on the server, not in the browser:
-//  - the JSON API identifies the acting party from a JWT; minting tokens must
-//    not happen in client code, and no ledger secret may reach the browser
-//    (see the security section of the plan).
 //  - it avoids the browser↔participant CORS problem entirely — the client only
 //    ever talks same-origin to /api/ledger.
+//  - it keeps the ledger endpoint (and, on a real network, the access token)
+//    out of client code. A local sandbox runs without authorization, so there is
+//    no secret here; a DevNet/MainNet deployment would add a bearer token in
+//    `jsonApi` and nothing else would change.
 //
 // Contracts and choices are defined in daml/Main.daml. Party slugs (alice, bob…)
 // used by the UI are mapped to the real allocated Canton parties via
 // LEDGER_PARTY_MAP, which scripts/localnet.sh writes after running daml/Init.daml.
+//
+// v2 differences from the old v1 bridge worth knowing:
+//  - template ids use the **package-name** reference (`#canton-resilience:Main:Policy`).
+//    The package-id format v1 required is deprecated as of Canton 3.4, so no
+//    package id needs to be discovered or threaded through the environment.
+//  - reads go through /v2/state/active-contracts and need an explicit ledger
+//    offset (/v2/state/ledger-end). There is no server-side field filter, so the
+//    application filter is applied in JS (see `forApp`).
+//  - Int64 values are still encoded as JSON **strings** over the wire.
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const LEDGER_URL = process.env.LEDGER_URL; // e.g. http://localhost:7575
-const APP_ID = process.env.LEDGER_APP_ID ?? 'canton-resilience';
+// The package NAME from daml/daml.yaml, used for the `#name:Module:Template`
+// reference. Unlike the package id it is stable across rebuilds.
+const PKG_NAME = process.env.LEDGER_PACKAGE_NAME ?? 'canton-resilience';
+// v2 requires a user-id on every command submission; a sandbox without
+// authorization cannot default it from a token, so it is supplied explicitly.
+const USER_ID = process.env.LEDGER_USER_ID ?? 'ledger-api-user';
 const PARTY_MAP: Record<string, string> = safeJson(process.env.LEDGER_PARTY_MAP) ?? {};
 
-// The Daml 2.x HTTP JSON API requires the acting party's token to carry the
-// participant's ledger id, and it resolves template ids only by concrete
-// package id (the '#package-name' shorthand is a 3.x feature). scripts/localnet.sh
-// discovers both from the running sandbox / built DAR and writes them here.
-const LEDGER_ID = process.env.LEDGER_ID ?? 'sandbox';
-const PKG = process.env.LEDGER_PACKAGE_ID ?? '#canton-resilience';
-const tid = (t: string) => `${PKG}:Main:${t}`;
+const tid = (t: string) => `#${PKG_NAME}:Main:${t}`;
 
 function safeJson(s: string | undefined): any {
   if (!s) return undefined;
@@ -37,24 +47,6 @@ function safeJson(s: string | undefined): any {
   } catch {
     return undefined;
   }
-}
-
-const b64url = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
-
-// Unsigned (alg:none) dev token carrying the acting party. Accepted only by a
-// JSON API started with `--allow-insecure-tokens` against a LocalNet sandbox.
-// There is deliberately no secret here — this is a local development bridge.
-function mintToken(party: string): string {
-  const header = { alg: 'none', typ: 'JWT' };
-  const payload = {
-    'https://daml.com/ledger-api': {
-      ledgerId: LEDGER_ID,
-      applicationId: APP_ID,
-      actAs: [party],
-      readAs: [party],
-    },
-  };
-  return `${b64url(header)}.${b64url(payload)}.`;
 }
 
 function qualify(slug: string): string {
@@ -73,13 +65,10 @@ function nodeIdOf(app: DemoApplication, party: string): string {
   return app.hostingNodes.find((n) => n.slug === slug)?.id ?? slug;
 }
 
-async function jsonApi(party: string, path: string, body: unknown): Promise<any> {
+async function jsonApi(path: string, body: unknown): Promise<any> {
   const res = await fetch(`${LEDGER_URL}${path}`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${mintToken(party)}`,
-    },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
     cache: 'no-store',
   });
@@ -90,15 +79,16 @@ async function jsonApi(party: string, path: string, body: unknown): Promise<any>
   } catch {
     parsed = undefined;
   }
-  if (!res.ok || parsed?.status >= 400) {
+  // v2 reports failures in the body as { code, cause } with a 4xx status.
+  if (!res.ok || parsed?.code) {
     throw new Error(ledgerError(parsed) ?? `Ledger ${path} failed (${res.status})`);
   }
   return parsed;
 }
 
-// Turn a JSON API error body into a human-readable, demo-safe message.
+// Turn a JSON Ledger API v2 error body into a human-readable, demo-safe message.
 function ledgerError(body: any): string | undefined {
-  const raw = Array.isArray(body?.errors) ? body.errors.join('; ') : undefined;
+  const raw: string | undefined = body?.cause ?? body?.message;
   if (!raw) return undefined;
   if (/not a policy member|not an? .*member/i.test(raw)) return 'Not an authorized approver for this policy';
   if (/already approved/i.test(raw)) return 'This party has already approved';
@@ -112,26 +102,79 @@ function ledgerError(body: any): string | undefined {
   return raw;
 }
 
-async function query(reader: string, template: string, q: Record<string, unknown>) {
-  const r = await jsonApi(reader, '/v1/query', { templateIds: [template], query: q });
-  return (r?.result ?? []) as Array<{ contractId: string; payload: any }>;
+// The current ledger end offset — the reading point for an active-contracts query.
+async function ledgerEnd(): Promise<number> {
+  const res = await fetch(`${LEDGER_URL}/v2/state/ledger-end`, { cache: 'no-store' });
+  const j = await res.json();
+  return Number(j.offset);
 }
 
-async function findRequest(appName: string, reader: string) {
-  const rows = await query(reader, tid('ActionRequest'), { application: appName });
-  return rows[0];
+interface Row {
+  contractId: string;
+  payload: any;
+  // Ledger timestamp of the event that created the contract (v2 CreatedEvent).
+  createdAt?: string;
+}
+
+// Active contracts of one template, as seen by `reader`. v2 has no server-side
+// field filter, so callers narrow by payload field via `forApp`.
+async function query(reader: string, template: string): Promise<Row[]> {
+  const activeAtOffset = await ledgerEnd();
+  const rows = await jsonApi('/v2/state/active-contracts', {
+    activeAtOffset,
+    eventFormat: {
+      filtersByParty: {
+        [reader]: {
+          cumulative: [
+            { identifierFilter: { TemplateFilter: { value: { templateId: tid(template) } } } },
+          ],
+        },
+      },
+      verbose: false,
+    },
+    verbose: false,
+  });
+  const out: Row[] = [];
+  for (const r of (rows ?? []) as any[]) {
+    const c = r?.contractEntry?.JsActiveContract?.createdEvent;
+    if (c) out.push({ contractId: c.contractId, payload: c.createArgument, createdAt: c.createdAt });
+  }
+  return out;
+}
+
+async function forApp(reader: string, template: string, appName: string): Promise<Row | undefined> {
+  const rows = await query(reader, template);
+  return rows.find((r) => r.payload?.application === appName);
+}
+
+// The arguments of an exercise, wrapped in the v2 command envelope.
+const exCmd = (template: string, contractId: string, choice: string, choiceArgument: unknown) => ({
+  ExerciseCommand: { templateId: tid(template), contractId, choice, choiceArgument },
+});
+
+// Submit a command as `party` and wait for it to commit. Returns the resulting
+// update id — the ledger's transaction identifier, surfaced to the UI.
+async function submit(party: string, commands: unknown[]): Promise<{ updateId: string }> {
+  const r = await jsonApi('/v2/commands/submit-and-wait', {
+    commands,
+    commandId: crypto.randomUUID(),
+    actAs: [party],
+    readAs: [party],
+    userId: USER_ID,
+  });
+  return { updateId: r.updateId };
 }
 
 async function viewApp(app: DemoApplication) {
   const reader = qualify(app.parties[0].id);
   const [reqs, audits] = await Promise.all([
-    query(reader, tid('ActionRequest'), { application: app.name }),
-    query(reader, tid('AuditRecord'), { application: app.name }),
+    forApp(reader, 'ActionRequest', app.name),
+    query(reader, 'AuditRecord'),
   ]);
-  const req = reqs[0]?.payload;
+  const req = reqs?.payload;
   return {
     approvals: ((req?.approvals ?? []) as string[]).map(deQualify),
-    executed: audits.length > 0,
+    executed: audits.some((a) => a.payload?.application === app.name),
   };
 }
 
@@ -140,35 +183,34 @@ async function viewApp(app: DemoApplication) {
 // (cons onto the head), so reverse to present them in approval order.
 async function auditApp(app: DemoApplication) {
   const reader = qualify(app.parties[0].id);
-  const rows = await query(reader, tid('AuditRecord'), { application: app.name });
-  return rows.map(({ payload: p }) => ({
-    verb: p.verb,
-    target: deQualify(p.target),
-    detail: p.detail,
-    reference: p.reference,
-    approvals: ((p.approvals ?? []) as string[]).slice().reverse().map(deQualify),
-    executor: deQualify(p.executor),
-    // The JSON API v1 encodes Int64 as a JSON *string*; convert back to number.
-    onlineOperators: p.onlineOperators == null ? undefined : Number(p.onlineOperators),
-    hostingThreshold: p.hostingThreshold == null ? undefined : Number(p.hostingThreshold),
-  }));
+  const rows = await query(reader, 'AuditRecord');
+  return rows
+    .filter((r) => r.payload?.application === app.name)
+    .map(({ payload: p, createdAt }) => ({
+      verb: p.verb,
+      target: deQualify(p.target),
+      detail: p.detail,
+      reference: p.reference,
+      approvals: ((p.approvals ?? []) as string[]).slice().reverse().map(deQualify),
+      executor: deQualify(p.executor),
+      // The JSON Ledger API encodes Int64 as a JSON *string*; convert back.
+      onlineOperators: p.onlineOperators == null ? undefined : Number(p.onlineOperators),
+      hostingThreshold: p.hostingThreshold == null ? undefined : Number(p.hostingThreshold),
+      // The ledger timestamp the record was created at (from the CreatedEvent).
+      timestamp: createdAt === undefined ? undefined : String(createdAt),
+    }));
 }
 
 // Read the application's HostingGroup: which operators are down, whether the
 // application is still available. Availability is a property of the ledger
 // contract (Execute enforces the same computation), not of the UI.
-async function findHosting(appName: string, reader: string) {
-  const rows = await query(reader, tid('HostingGroup'), { application: appName });
-  return rows[0];
-}
-
 async function hostingApp(app: DemoApplication) {
   const reader = qualify(app.parties[0].id);
-  const group = await findHosting(app.name, reader);
+  const group = await forApp(reader, 'HostingGroup', app.name);
   if (!group)
     throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh to initialize`);
   const offline = ((group.payload.offline ?? []) as string[]).map((p) => nodeIdOf(app, p));
-  // Int64 arrives as a JSON string over JSON API v1.
+  // Int64 arrives as a JSON string over the JSON Ledger API.
   const threshold = Number(group.payload.threshold);
   const online = app.hostingNodes.length - offline.length;
   return { offline, online, threshold, available: online >= threshold };
@@ -181,60 +223,48 @@ async function setNodeHosting(app: DemoApplication, nodeId: string, online: bool
   const node = app.hostingNodes.find((n) => n.id === nodeId);
   if (!node) throw new Error('Not a hosting operator for this application');
   const nodeParty = qualify(node.slug);
-  const group = await findHosting(app.name, node.slug);
+  const group = await forApp(node.slug, 'HostingGroup', app.name);
   if (!group)
     throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh to initialize`);
-  await jsonApi(nodeParty, '/v1/exercise', {
-    templateId: tid('HostingGroup'),
-    contractId: group.contractId,
-    choice: online ? 'ReportOnline' : 'ReportOffline',
-    argument: { node: nodeParty },
-  });
+  await submit(nodeParty, [
+    exCmd('HostingGroup', group.contractId, online ? 'ReportOnline' : 'ReportOffline', { node: nodeParty }),
+  ]);
 }
 
 // Ensure a pending ActionRequest exists for the app; create one from the
 // app's Policy via RequestAction if not. Idempotent — never resets state.
 async function openRequest(app: DemoApplication) {
   const requester = qualify(app.parties[0].id);
-  if (await findRequest(app.name, requester)) return;
-  const policies = await query(requester, tid('Policy'), { application: app.name });
-  const policy = policies[0];
+  if (await forApp(requester, 'ActionRequest', app.name)) return;
+  const policy = await forApp(requester, 'Policy', app.name);
   if (!policy)
     throw new Error(`No Policy on the ledger for "${app.name}" — run scripts/localnet.sh to initialize`);
-  await jsonApi(requester, '/v1/exercise', {
-    templateId: tid('Policy'),
-    contractId: policy.contractId,
-    choice: 'RequestAction',
-    argument: {
+  await submit(requester, [
+    exCmd('Policy', policy.contractId, 'RequestAction', {
       requester,
       verb: app.action.verb,
       target: app.action.to ?? app.action.from ?? app.name,
       detail: app.action.detail,
       reference: app.action.reference,
-    },
-  });
+    }),
+  ]);
 }
 
 async function exerciseOnRequest(app: DemoApplication, actorSlug: string, choice: 'Approve' | 'Execute') {
   const actor = qualify(actorSlug);
-  const req = await findRequest(app.name, actor);
+  const req = await forApp(actor, 'ActionRequest', app.name);
   if (!req) throw new Error(`No open request for "${app.name}"`);
   // Execute must name the application's live HostingGroup; the choice checks
   // that it belongs to this application and that enough operators are online.
-  let argument: Record<string, unknown>;
+  let choiceArgument: Record<string, unknown>;
   if (choice === 'Approve') {
-    argument = { approver: actor };
+    choiceArgument = { approver: actor };
   } else {
-    const group = await findHosting(app.name, actor);
+    const group = await forApp(actor, 'HostingGroup', app.name);
     if (!group) throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh`);
-    argument = { executor: actor, hostingGroup: group.contractId };
+    choiceArgument = { executor: actor, hostingGroup: group.contractId };
   }
-  await jsonApi(actor, '/v1/exercise', {
-    templateId: tid('ActionRequest'),
-    contractId: req.contractId,
-    choice,
-    argument,
-  });
+  return submit(actor, [exCmd('ActionRequest', req.contractId, choice, choiceArgument)]);
 }
 
 export async function POST(req: NextRequest) {
@@ -256,9 +286,10 @@ export async function POST(req: NextRequest) {
       case 'approve':
         await exerciseOnRequest(app, body.partyId ?? '', 'Approve');
         return NextResponse.json({ ok: true });
-      case 'execute':
-        await exerciseOnRequest(app, body.partyId ?? app.parties[0].id, 'Execute');
-        return NextResponse.json({ ok: true });
+      case 'execute': {
+        const { updateId } = await exerciseOnRequest(app, body.partyId ?? app.parties[0].id, 'Execute');
+        return NextResponse.json({ ok: true, updateId });
+      }
       case 'view':
         return NextResponse.json({ ok: true, view: await viewApp(app) });
       case 'audit':

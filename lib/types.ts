@@ -78,4 +78,5 @@ export interface LedgerAuditRecord {
   executor: string; // slug of the party that executed
   onlineOperators?: number; // online operators at execution time
   hostingThreshold?: number; // hosting threshold at execution time
+  timestamp?: string; // ledger time the record was created (ISO-8601)
 }

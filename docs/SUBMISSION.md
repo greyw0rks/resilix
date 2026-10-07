@@ -25,19 +25,23 @@ particular is not UI state: each hosting operator reports its own node through a
 uniquely controls, and an application below its hosting threshold **cannot execute** — the gate
 is in `ActionRequest.Execute`, so a console that lied about availability would change nothing.
 
-## Verified end-to-end (Daml SDK 2.10.6)
+## Verified end-to-end (Daml SDK 3.5.0-snapshot)
 
 - `daml build` + `daml test` — every acceptance case green (`daml/Test.daml`), including the
   hosting cases: an operator reporting itself down, a non-operator being unable to report, and
   **execution refused while under-hosted** then permitted again after recovery.
-- `npm run ledger:up` — sandbox + HTTP JSON API v1, parties allocated (members *and* hosting
-  operators), one `HostingGroup` and one `Policy` per reference app, `.env.local` written.
-- `npm run verify:ledger` — drives the whole flow through the same JSON API v1 calls that
-  `app/api/ledger/route.ts` makes: request → approve → approve → **two operators report down →
-  execute rejected on-ledger ("Hosting below threshold") → operator reports back online →
-  execute → `AuditRecord`**, with under-threshold execute, double-approve, double-offline and
-  non-member actions all rejected **on-ledger** and shown as readable messages. See
-  `docs/LOCALNET.md`.
+- `npm run ledger:up` — a Canton 3.x sandbox serving the **JSON Ledger API v2**, parties
+  allocated (members *and* hosting operators), one `HostingGroup` and one `Policy` per reference
+  app, `.env.local` written.
+- `npm run verify:ledger` — **18 on-ledger checks**, driving the whole flow through the same
+  JSON Ledger API v2 calls that `app/api/ledger/route.ts` makes: request → approve → approve →
+  **two operators report down → execute rejected on-ledger ("Hosting below threshold") →
+  operator reports back online → execute → `AuditRecord`**, with under-threshold execute,
+  double-approve, double-offline, a peer operator reporting someone else's node, and non-member
+  actions all rejected **on-ledger** and shown as readable messages. See `docs/LOCALNET.md`.
+- CI reproduces it: `.github/workflows/ci.yml` has a `ledger` job that runs `npm run
+  ledger:up && npm run verify:ledger` on a clean runner — the setup path is one command, not a
+  tribal-knowledge ritual.
 
 ## Reusable, not treasury-specific
 
@@ -52,9 +56,10 @@ These require infrastructure that is not publicly installable; they are wired as
 clean seams rather than mocked as "done":
 
 - **Grofty signing** — `lib/wallet.ts` defines the `WalletAdapter` seam. There is
-  no public Grofty SDK; a real adapter would wrap it (or the published
-  `@canton-network/wallet-sdk`). The demo uses `DemoWallet` (`real = false`), and
-  the ledger command is authorized server-side by the acting party's dev token.
+  no public Grofty SDK; the real adapter is the browser-side **Canton dApp SDK**
+  (`@canton-network/dapp-sdk`, CIP-0103: `connect()` → `listAccounts()` →
+  `prepareExecuteAndWait`), which needs a wallet extension installed and a
+  reachable validator. The demo uses `DemoWallet` (`real = false`).
 - **BitSafe Decentralization Manager / real multi-operator deployment** — the
   `HostingGroup` contract models the *status* of the operator set (who hosts the
   app, how many must be online, who is down) and `Execute` enforces the threshold
@@ -65,10 +70,20 @@ clean seams rather than mocked as "done":
   nodes; the real topology is a DevNet/MainNet deployment concern
   (`docs/ARCHITECTURE.md`).
 
+### On authorization
+
+Because a local sandbox runs without authorization, **no token is minted anywhere**
+— not by the browser, not by the server route. Commands name the party they act
+as (`actAs`), and the party's *right to perform the action* comes entirely from
+the Daml `controller` clauses: `Execute` is controlled by a policy member,
+`ReportOffline` by the operator that owns the node. A client that lied about who
+it was could not widen its own authority — which is exactly the property the
+control layer exists to provide.
+
 ## Run it
 
 ```bash
-# one-time toolchain — see docs/LOCALNET.md §1 (JDK + Daml 2.10.6)
+# one-time toolchain — see docs/LOCALNET.md §1 (JDK + Daml 3.x SDK)
 npm install
 npm run ledger:up   # live Canton ledger + .env.local
 npm run dev         # http://localhost:3000, header shows "json-api"
