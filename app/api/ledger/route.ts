@@ -267,11 +267,35 @@ async function exerciseOnRequest(app: DemoApplication, actorSlug: string, choice
   return submit(actor, [exCmd('ActionRequest', req.contractId, choice, choiceArgument)]);
 }
 
+// The exact command this route would submit, handed back to the caller instead.
+// A connected Canton wallet uses this to sign and submit the action *itself* —
+// the participant then authorizes it from the wallet's party rather than from a
+// server that merely claims to be that party. The acting party is returned so
+// the caller can check the wallet actually holds it before trying.
+async function prepareFor(app: DemoApplication, action: string, partyId: string) {
+  const actor = qualify(partyId);
+  const req = await forApp(actor, 'ActionRequest', app.name);
+  if (!req) throw new Error(`No open request for "${app.name}"`);
+  if (action === 'approve')
+    return { commands: [exCmd('ActionRequest', req.contractId, 'Approve', { approver: actor })], actAs: [actor] };
+  if (action === 'execute') {
+    const group = await forApp(actor, 'HostingGroup', app.name);
+    if (!group) throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh`);
+    return {
+      commands: [
+        exCmd('ActionRequest', req.contractId, 'Execute', { executor: actor, hostingGroup: group.contractId }),
+      ],
+      actAs: [actor],
+    };
+  }
+  throw new Error(`Cannot prepare "${action}"`);
+}
+
 export async function POST(req: NextRequest) {
   if (!LEDGER_URL) {
     return NextResponse.json({ error: 'LEDGER_URL is not configured on the server' }, { status: 503 });
   }
-  let body: { op?: string; appId?: string; partyId?: string; nodeId?: string; online?: boolean };
+  let body: { op?: string; appId?: string; partyId?: string; nodeId?: string; online?: boolean; action?: string };
   try {
     body = await req.json();
   } catch {
@@ -292,6 +316,10 @@ export async function POST(req: NextRequest) {
       }
       case 'view':
         return NextResponse.json({ ok: true, view: await viewApp(app) });
+      case 'prepare': {
+        const prep = await prepareFor(app, body.action ?? '', body.partyId ?? '');
+        return NextResponse.json({ ok: true, ...prep });
+      }
       case 'audit':
         return NextResponse.json({ ok: true, records: await auditApp(app) });
       case 'hosting':

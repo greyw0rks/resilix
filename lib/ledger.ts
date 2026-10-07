@@ -18,6 +18,13 @@ export interface RequestView {
   executed: boolean;
 }
 
+// A ledger command the console would otherwise have the server submit, plus the
+// party it must be authorized by. A connected Canton wallet submits this itself.
+export interface PreparedCommand {
+  commands: unknown[];
+  actAs: string[];
+}
+
 // Distributed-hosting state, read from the application's HostingGroup contract
 // (daml/Main.daml). `offline` holds UI node ids ('a', 'b', …).
 export interface HostingView {
@@ -35,6 +42,13 @@ export interface ResilienceLedger {
   // Returns the ledger's transaction (update) id when the execution committed
   // to a real ledger; undefined for the in-memory demo.
   execute(app: DemoApplication, executor: string): Promise<string | undefined>;
+  // The command that would perform the action, for a real wallet to submit
+  // itself (undefined when there is no real ledger behind this adapter).
+  prepare(
+    app: DemoApplication,
+    action: 'approve' | 'execute',
+    partyId: string,
+  ): Promise<PreparedCommand | undefined>;
   view(app: DemoApplication): Promise<RequestView>;
   // The immutable AuditRecord contracts for this application, oldest first.
   audit(app: DemoApplication): Promise<LedgerAuditRecord[]>;
@@ -104,6 +118,12 @@ class InMemoryLedger implements ResilienceLedger {
     });
     this.records.set(app.id, list);
     // The demo ledger has no transaction id — nothing was submitted anywhere.
+    return undefined;
+  }
+
+  // Nothing to hand a wallet: this adapter never talks to a participant, so the
+  // caller keeps its existing path.
+  async prepare(): Promise<PreparedCommand | undefined> {
     return undefined;
   }
 
@@ -177,6 +197,12 @@ class HttpLedger implements ResilienceLedger {
     // transaction identifier for the execution.
     const data = await this.call('execute', app, executor);
     return typeof data.updateId === 'string' ? data.updateId : undefined;
+  }
+
+  async prepare(app: DemoApplication, action: 'approve' | 'execute', partyId: string) {
+    const data = await this.call('prepare', app, partyId, { action });
+    if (!Array.isArray(data.commands) || !Array.isArray(data.actAs)) return undefined;
+    return { commands: data.commands as unknown[], actAs: data.actAs as string[] };
   }
 
   async view(app: DemoApplication): Promise<RequestView> {
