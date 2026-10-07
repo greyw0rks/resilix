@@ -1,9 +1,23 @@
-import type { DemoApplication } from './types';
+import type { DemoApplication, HostingNode } from './types';
 
 // The four reference applications. The same decentralization layer protects
 // each one — only the parties, thresholds and privileged action change.
 // This is the point of the project: policy, approval, resilience and audit
 // are reusable infrastructure, not features of a single treasury app.
+
+// Hosting node sets. `slug` maps a node to the allocated Canton party that
+// hosts it (daml/Init.daml); that operator reports its own status on-ledger.
+const SMALL_HOST: HostingNode[] = [
+  { id: 'a', label: 'Node A', operator: 'Operator Alpha', slug: 'opalpha' },
+  { id: 'b', label: 'Node B', operator: 'Operator Beta', slug: 'opbeta' },
+  { id: 'c', label: 'Node C', operator: 'Operator Gamma', slug: 'opgamma' },
+];
+
+const LARGE_HOST: HostingNode[] = [
+  ...SMALL_HOST,
+  { id: 'd', label: 'Node D', operator: 'Operator Delta', slug: 'opdelta' },
+  { id: 'e', label: 'Node E', operator: 'Operator Epsilon', slug: 'opepsilon' },
+];
 
 export const APPLICATIONS: DemoApplication[] = [
   {
@@ -17,11 +31,7 @@ export const APPLICATIONS: DemoApplication[] = [
       { id: 'carol', name: 'Carol', role: 'Risk Officer' },
     ],
     threshold: 2,
-    hostingNodes: [
-      { id: 'a', label: 'Node A', operator: 'Operator Alpha' },
-      { id: 'b', label: 'Node B', operator: 'Operator Beta' },
-      { id: 'c', label: 'Node C', operator: 'Operator Gamma' },
-    ],
+    hostingNodes: SMALL_HOST,
     hostingThreshold: 2,
     action: {
       verb: 'TRANSFER',
@@ -45,11 +55,7 @@ export const APPLICATIONS: DemoApplication[] = [
       { id: 'dave', name: 'Dave', role: 'Board Delegate' },
     ],
     threshold: 3,
-    hostingNodes: [
-      { id: 'a', label: 'Node A', operator: 'Operator Alpha' },
-      { id: 'b', label: 'Node B', operator: 'Operator Beta' },
-      { id: 'c', label: 'Node C', operator: 'Operator Gamma' },
-    ],
+    hostingNodes: SMALL_HOST,
     hostingThreshold: 2,
     action: {
       verb: 'MINT',
@@ -72,11 +78,7 @@ export const APPLICATIONS: DemoApplication[] = [
       { id: 'carol', name: 'Carol', role: 'Oversight' },
     ],
     threshold: 2,
-    hostingNodes: [
-      { id: 'a', label: 'Node A', operator: 'Operator Alpha' },
-      { id: 'b', label: 'Node B', operator: 'Operator Beta' },
-      { id: 'c', label: 'Node C', operator: 'Operator Gamma' },
-    ],
+    hostingNodes: SMALL_HOST,
     hostingThreshold: 2,
     action: {
       verb: 'SET FEE',
@@ -101,13 +103,7 @@ export const APPLICATIONS: DemoApplication[] = [
       { id: 'erin', name: 'Erin', role: 'Council' },
     ],
     threshold: 3,
-    hostingNodes: [
-      { id: 'a', label: 'Node A', operator: 'Operator Alpha' },
-      { id: 'b', label: 'Node B', operator: 'Operator Beta' },
-      { id: 'c', label: 'Node C', operator: 'Operator Gamma' },
-      { id: 'd', label: 'Node D', operator: 'Operator Delta' },
-      { id: 'e', label: 'Node E', operator: 'Operator Epsilon' },
-    ],
+    hostingNodes: LARGE_HOST,
     hostingThreshold: 3,
     action: {
       verb: 'PAUSE',

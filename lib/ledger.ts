@@ -18,6 +18,15 @@ export interface RequestView {
   executed: boolean;
 }
 
+// Distributed-hosting state, read from the application's HostingGroup contract
+// (daml/Main.daml). `offline` holds UI node ids ('a', 'b', …).
+export interface HostingView {
+  offline: string[];
+  online: number;
+  threshold: number;
+  available: boolean;
+}
+
 export interface ResilienceLedger {
   readonly kind: 'in-memory' | 'json-api';
   openRequest(app: DemoApplication): Promise<void>;
@@ -27,6 +36,11 @@ export interface ResilienceLedger {
   view(app: DemoApplication): Promise<RequestView>;
   // The immutable AuditRecord contracts for this application, oldest first.
   audit(app: DemoApplication): Promise<LedgerAuditRecord[]>;
+  // The application's hosting state, as recorded on the ledger.
+  hosting(app: DemoApplication): Promise<HostingView>;
+  // Report a hosting operator online/offline. On a real ledger this is
+  // submitted *as that operator's party* — an operator reports itself.
+  setNodeStatus(app: DemoApplication, nodeId: string, online: boolean): Promise<void>;
 }
 
 // --- In-memory implementation (default) -----------------------------------
@@ -36,6 +50,7 @@ class InMemoryLedger implements ResilienceLedger {
   readonly kind = 'in-memory' as const;
   private state = new Map<string, RequestView>();
   private records = new Map<string, LedgerAuditRecord[]>();
+  private offline = new Map<string, string[]>();
 
   private ensure(app: DemoApplication): RequestView {
     let v = this.state.get(app.id);
@@ -49,6 +64,7 @@ class InMemoryLedger implements ResilienceLedger {
   async openRequest(app: DemoApplication) {
     this.state.set(app.id, { approvals: [], executed: false });
     this.records.delete(app.id); // demo reset; a real ledger keeps audit records forever
+    this.offline.set(app.id, []); // all operators start online
   }
 
   async approve(app: DemoApplication, partyId: string) {
@@ -70,8 +86,10 @@ class InMemoryLedger implements ResilienceLedger {
     if (v.approvals.length < app.threshold)
       throw new Error('Approval threshold not met');
     v.executed = true;
-    // Mirror the ledger's Execute → AuditRecord effect for the demo.
+    // Mirror the ledger's Execute → AuditRecord effect for the demo, including
+    // the hosting state captured at execution time.
     const list = this.records.get(app.id) ?? [];
+    const offline = this.offline.get(app.id) ?? [];
     list.push({
       verb: app.action.verb,
       target: app.action.to ?? app.action.from ?? app.name,
@@ -79,6 +97,8 @@ class InMemoryLedger implements ResilienceLedger {
       reference: app.action.reference,
       approvals: [...v.approvals],
       executor: app.parties.some((p) => p.id === executor) ? executor : app.parties[0].id,
+      onlineOperators: app.hostingNodes.length - offline.length,
+      hostingThreshold: app.hostingThreshold,
     });
     this.records.set(app.id, list);
   }
@@ -91,6 +111,24 @@ class InMemoryLedger implements ResilienceLedger {
   async audit(app: DemoApplication): Promise<LedgerAuditRecord[]> {
     return [...(this.records.get(app.id) ?? [])];
   }
+
+  // Mirrors HostingGroup's guards: only a listed operator may report, and the
+  // report must change the state (no double-offline / redundant online).
+  async setNodeStatus(app: DemoApplication, nodeId: string, online: boolean) {
+    if (!app.hostingNodes.some((n) => n.id === nodeId))
+      throw new Error('Not a hosting operator for this application');
+    const current = this.offline.get(app.id) ?? [];
+    const isOffline = current.includes(nodeId);
+    if (!online && isOffline) throw new Error('Operator is already offline');
+    if (online && !isOffline) throw new Error('Operator is already online');
+    this.offline.set(app.id, online ? current.filter((id) => id !== nodeId) : [...current, nodeId]);
+  }
+
+  async hosting(app: DemoApplication): Promise<HostingView> {
+    const offline = [...(this.offline.get(app.id) ?? [])];
+    const online = app.hostingNodes.length - offline.length;
+    return { offline, online, threshold: app.hostingThreshold, available: online >= app.hostingThreshold };
+  }
 }
 
 // --- HTTP proxy implementation (Daml JSON API v1, via /api/ledger) ---------
@@ -102,11 +140,16 @@ class InMemoryLedger implements ResilienceLedger {
 class HttpLedger implements ResilienceLedger {
   readonly kind = 'json-api' as const;
 
-  private async call(op: string, app: DemoApplication, partyId?: string): Promise<any> {
+  private async call(
+    op: string,
+    app: DemoApplication,
+    partyId?: string,
+    extra?: Record<string, unknown>,
+  ): Promise<any> {
     const res = await fetch('/api/ledger', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ op, appId: app.id, partyId }),
+      body: JSON.stringify({ op, appId: app.id, partyId, ...extra }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error ?? `Ledger request failed (${res.status})`);
@@ -137,6 +180,15 @@ class HttpLedger implements ResilienceLedger {
   async audit(app: DemoApplication): Promise<LedgerAuditRecord[]> {
     const data = await this.call('audit', app);
     return (data.records ?? []) as LedgerAuditRecord[];
+  }
+
+  async hosting(app: DemoApplication): Promise<HostingView> {
+    const data = await this.call('hosting', app);
+    return data.hosting as HostingView;
+  }
+
+  async setNodeStatus(app: DemoApplication, nodeId: string, online: boolean) {
+    await this.call('hostingSet', app, undefined, { nodeId, online });
   }
 }
 

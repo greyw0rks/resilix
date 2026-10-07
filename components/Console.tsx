@@ -42,33 +42,32 @@ export function Console() {
   const app = getApplication(selectedId);
 
   const refresh = useCallback(async () => {
-    const [v, r] = await Promise.all([ledger.view(app), ledger.audit(app)]);
+    const [v, r, h] = await Promise.all([ledger.view(app), ledger.audit(app), ledger.hosting(app)]);
     setApprovals(v.approvals);
     setExecuted(v.executed);
     setRecords(r);
+    // Hosting state is read from the application's HostingGroup contract, so
+    // an operator's status is ledger truth rather than local UI state.
+    setOfflineNodes(h.offline);
   }, [ledger, app]);
 
   useEffect(() => {
     let active = true;
     setBusy(true);
     setError(null);
-    ledger.openRequest(app).then(async () => {
-      const [v, r] = await Promise.all([ledger.view(app), ledger.audit(app)]);
-      if (!active) return;
-      setApprovals(v.approvals);
-      setExecuted(v.executed);
-      setRecords(r);
-      setOfflineNodes([]);
-      setBusy(false);
-    }).catch((e) => {
-      if (!active) return;
-      setError(errorMessage(e));
-      setBusy(false);
-    });
+    ledger
+      .openRequest(app)
+      .then(() => refresh())
+      .catch((e) => {
+        if (active) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (active) setBusy(false);
+      });
     return () => {
       active = false;
     };
-  }, [ledger, app]);
+  }, [ledger, app, refresh]);
 
   // On a real ledger, poll so a second approver's action (or a browser reload
   // on another machine) is reflected here. State lives on the ledger, so a
@@ -104,9 +103,21 @@ export function Console() {
       setBusy(false);
     }
   };
-  const toggleNode = (id: string) => {
-    if (executed) return;
-    setOfflineNodes((n) => (n.includes(id) ? n.filter((x) => x !== id) : [...n, id]));
+  const toggleNode = async (id: string) => {
+    if (executed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // If the node is currently offline, bringing it back is an "online"
+      // report; otherwise this takes it down. Either way the operator reports
+      // its own status and the ledger re-checks the guards.
+      await ledger.setNodeStatus(app, id, offlineNodes.includes(id));
+      await refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
   };
   const doExecute = async () => {
     if (!canExecute(app, state) || busy) return;
@@ -127,7 +138,6 @@ export function Console() {
     try {
       // On a real ledger there is no reset — just re-read current state.
       if (!isLive) await ledger.openRequest(app);
-      setOfflineNodes([]);
       await refresh();
     } catch (e) {
       setError(errorMessage(e));
@@ -184,7 +194,13 @@ export function Console() {
             <SharedControl app={app} approvals={approvals} locked={executed || busy} onToggle={toggleApproval} />
           </div>
           <div id="hosting" className="scroll-mt-20">
-            <DistributedHosting app={app} offlineNodes={offlineNodes} locked={executed} onToggle={toggleNode} />
+            <DistributedHosting
+              app={app}
+              offlineNodes={offlineNodes}
+              locked={executed || busy}
+              onToggle={toggleNode}
+              note={isLive ? 'read from ledger HostingGroup' : undefined}
+            />
           </div>
         </div>
 

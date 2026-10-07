@@ -18,17 +18,26 @@ immutable **audit** trail.
 | **Policy** | `Policy` template — members, threshold, well-formedness `ensure` | ✅ on-ledger |
 | **Approval** | `ActionRequest.Approve` / `Execute`, `length approvals >= threshold` | ✅ on-ledger |
 | **Audit** | `AuditRecord` template; UI reads it back via `/api/ledger` `audit` | ✅ on-ledger |
-| **Resilience (hosting)** | Decentralization Manager / operator topology | 🔌 seam (see below) |
+| **Resilience (hosting)** | `HostingGroup` + `ReportOffline`/`ReportOnline`; `Execute` fetches the group and refuses below the hosting threshold | ✅ on-ledger |
 
-## Verified end-to-end (2026-09-29, Daml SDK 2.10.6)
+All four pillars are enforced by the Daml choices, not the console. Operator status in
+particular is not UI state: each hosting operator reports its own node through a choice it
+uniquely controls, and an application below its hosting threshold **cannot execute** — the gate
+is in `ActionRequest.Execute`, so a console that lied about availability would change nothing.
 
-- `daml build` + `daml test` — every acceptance case green (`daml/Test.daml`).
-- `npm run ledger:up` — sandbox + HTTP JSON API v1, parties allocated, one
-  `Policy` per reference app, `.env.local` written.
-- Full flow through the real `/api/ledger` route on the live ledger:
-  request → approve → approve → **execute → AuditRecord**, with under-threshold
-  execute, double-approve and non-member actions rejected **on-ledger** and shown
-  as readable messages. See `docs/LOCALNET.md`.
+## Verified end-to-end (Daml SDK 2.10.6)
+
+- `daml build` + `daml test` — every acceptance case green (`daml/Test.daml`), including the
+  hosting cases: an operator reporting itself down, a non-operator being unable to report, and
+  **execution refused while under-hosted** then permitted again after recovery.
+- `npm run ledger:up` — sandbox + HTTP JSON API v1, parties allocated (members *and* hosting
+  operators), one `HostingGroup` and one `Policy` per reference app, `.env.local` written.
+- `npm run verify:ledger` — drives the whole flow through the same JSON API v1 calls that
+  `app/api/ledger/route.ts` makes: request → approve → approve → **two operators report down →
+  execute rejected on-ledger ("Hosting below threshold") → operator reports back online →
+  execute → `AuditRecord`**, with under-threshold execute, double-approve, double-offline and
+  non-member actions all rejected **on-ledger** and shown as readable messages. See
+  `docs/LOCALNET.md`.
 
 ## Reusable, not treasury-specific
 
@@ -46,11 +55,15 @@ clean seams rather than mocked as "done":
   no public Grofty SDK; a real adapter would wrap it (or the published
   `@canton-network/wallet-sdk`). The demo uses `DemoWallet` (`real = false`), and
   the ledger command is authorized server-side by the acting party's dev token.
-- **BitSafe Decentralization Manager / multi-operator hosting** — the hosting
-  layer (Decentralized Party, operator A/B/C…) lives *outside* the business
-  contracts by design (`docs/ARCHITECTURE.md`). Against a single LocalNet
-  participant the operator/node-failure view is a faithful UI simulation; the real
-  topology is a DevNet/MainNet deployment concern.
+- **BitSafe Decentralization Manager / real multi-operator deployment** — the
+  `HostingGroup` contract models the *status* of the operator set (who hosts the
+  app, how many must be online, who is down) and `Execute` enforces the threshold
+  on-ledger. What runs *below* it — the Decentralized Party and the actual
+  distributed participant set — is the Decentralization Manager's job and is not
+  reimplemented here. Against a single LocalNet participant the operator parties
+  are real allocated parties reporting real status, but they are not separate
+  nodes; the real topology is a DevNet/MainNet deployment concern
+  (`docs/ARCHITECTURE.md`).
 
 ## Run it
 

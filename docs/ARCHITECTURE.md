@@ -7,14 +7,16 @@ Grofty Wallet
 Canton Resilience (this project)
      |  +-- Policy Engine      : who may act, how many must approve
      |  +-- Approval Workflow  : per-party approvals, quorum
+     |  +-- Hosting Registry   : operator parties, self-reported node status
      |  +-- Audit Engine       : ordered, traceable record of every decision
      v
 Daml Application Contracts
      |  Policy / ActionRequest (+ Approve/Execute choices) / AuditRecord
+     |  HostingGroup (+ ReportOffline/ReportOnline)
      v
 BitSafe Decentralization Manager
      |  +-- Decentralized Party
-     |  +-- Operator A / B / C (...)
+     |  +-- Operator A / B / C (...)  ← the real node topology lives here
      v
 Canton Network (settlement · privacy)
 ```
@@ -28,16 +30,30 @@ protocol governance are all instances of that shape, defined in `lib/application
 
 ## Code ↔ contract mapping
 
-`lib/engine.ts` keeps the policy/hosting/audit logic as pure functions so it maps directly onto
-the Daml choices it will eventually call:
+`lib/engine.ts` keeps the policy/hosting/audit logic as pure functions; in live mode the same
+facts are read from, and enforced by, the Daml choices in `daml/Main.daml`:
 
 | UI concept (`lib/engine.ts`) | Daml equivalent (`daml/Main.daml`)          |
 | ---------------------------- | ------------------------------------------- |
 | `approvalsMet`               | `Execute` guard: `length approvals >= threshold` |
 | approval toggle              | `ActionRequest.Approve`                     |
 | execute action               | `ActionRequest.Execute` → `AuditRecord`     |
-| audit trail                  | `AuditRecord` contract                      |
-| `isAvailable` / hosting      | Decentralization Manager (out of contract)  |
+| audit trail                  | `AuditRecord` contract (incl. hosting quorum at execution) |
+| `isAvailable` / `onlineCount`| `HostingGroup.offline`, enforced by `Execute` |
+| operator online/offline      | `HostingGroup.ReportOffline` / `ReportOnline` |
+
+## Hosting is on-ledger, the node topology is not
+
+`HostingGroup` records which operator parties host an application, the minimum number that must
+stay online, and which are currently down. Each operator reports **its own** status
+(`ReportOffline` / `ReportOnline`, controller = that node), so no admin asserts on a node's
+behalf. `ActionRequest.Execute` fetches the group and refuses to run below threshold — the
+availability gate is enforced by the ledger, not the console.
+
+What `HostingGroup` deliberately does **not** do is run a real multi-participant deployment.
+The Decentralized Party and the actual distributed node set are BitSafe's Decentralization
+Manager's job; this contract models the *status* of those operators, and the seam is documented
+rather than faked.
 
 ## Design rule
 
@@ -51,7 +67,9 @@ The demo must prove two independent properties:
 - **Shared control** — a protected action does not execute until the configured approval
   threshold is reached.
 - **Distributed hosting** — taking one configured hosting operator offline does not make the
-  application unavailable while the hosting threshold still permits operation.
+  application unavailable while the hosting threshold still permits operation, and dropping
+  below the threshold *does* block execution.
 
 These are independent: approvals govern *whether* an action is authorized; hosting governs
-*whether the application is reachable to execute it*. The audit trail records both.
+*whether the application is reachable to execute it*. The audit trail records both, and the
+`AuditRecord` captures the online-operator count at the moment of execution.

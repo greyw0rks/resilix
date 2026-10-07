@@ -7,25 +7,49 @@ import DA.Assert ((===))
 {-
   Acceptance tests for the Canton Resilience control layer.
 
-  These prove the threshold / authorization invariants are enforced *on the
-  ledger* by the Daml choices, not in the UI. Each `Script` is picked up by
-  `daml test`. The generic ActionRequest stands in for a treasury transfer
-  (verb = "TRANSFER") — the same contracts protect mint/burn/pause/param.
+  These prove the threshold / authorization / availability invariants are
+  enforced *on the ledger* by the Daml choices, not in the UI. Each `Script` is
+  picked up by `daml test`. The generic ActionRequest stands in for a treasury
+  transfer (verb = "TRANSFER") — the same contracts protect mint/burn/pause/param.
+
+  The hosting cases are the point of HostingGroup: an application that falls
+  below its hosting threshold must be unable to execute, on the ledger.
 -}
 
--- A standard 2-of-3 treasury policy plus a non-member (dave).
-setup2of3 : Script (Party, Party, Party, Party, ContractId Policy)
+-- A 2-of-3 treasury policy hosted by three operators with a threshold of two.
+data Fixture = Fixture
+  with
+    alice, bob, carol, operator : Party
+    nodeA, nodeB, nodeC : Party
+    policyCid : ContractId Policy
+    hostingCid : ContractId HostingGroup
+  deriving (Show)
+
+setup2of3 : Script Fixture
 setup2of3 = do
   operator <- allocateParty "Operator"
   alice <- allocateParty "Alice"
   bob <- allocateParty "Bob"
   carol <- allocateParty "Carol"
-  polCid <- submit operator $ createCmd Policy with
+  nodeA <- allocateParty "OperatorAlpha"
+  nodeB <- allocateParty "OperatorBeta"
+  nodeC <- allocateParty "OperatorGamma"
+
+  hostingCid <- submit operator $ createCmd HostingGroup with
+    operator
+    members = [alice, bob, carol]
+    application = "Treasury"
+    nodes = [nodeA, nodeB, nodeC]
+    threshold = 2
+    offline = []
+
+  policyCid <- submit operator $ createCmd Policy with
     operator
     members = [alice, bob, carol]
     threshold = 2
     application = "Treasury"
-  pure (alice, bob, carol, operator, polCid)
+
+  pure (Fixture with ..)
 
 request : Party -> ContractId Policy -> Script (ContractId ActionRequest)
 request requester polCid =
@@ -36,15 +60,26 @@ request requester polCid =
     detail = "Send 50,000 CC"
     reference = "REQ-1042"
 
+-- Approve as alice and bob (quorum) and return the request ready to execute.
+approvedTwice : Fixture -> Script (ContractId ActionRequest)
+approvedTwice f = do
+  req0 <- request f.alice f.policyCid
+  req1 <- submit f.alice $ exerciseCmd req0 Approve with approver = f.alice
+  submit f.bob $ exerciseCmd req1 Approve with approver = f.bob
+
+-- The Execute command, unsubmitted — so both `submit` (happy path) and
+-- `submitMustFail` (negative cases) can wrap it.
+executeCmd : Fixture -> ContractId ActionRequest -> Party -> Commands (ContractId AuditRecord)
+executeCmd f req executor =
+  exerciseCmd req Execute with executor; hostingGroup = f.hostingCid
+
 -- 2-of-3 can execute once the threshold is met.
 test_twoOfThree_executes : Script ()
 test_twoOfThree_executes = do
-  (alice, bob, _carol, _op, polCid) <- setup2of3
-  req0 <- request alice polCid
-  req1 <- submit alice $ exerciseCmd req0 Approve with approver = alice
-  req2 <- submit bob $ exerciseCmd req1 Approve with approver = bob
-  auditCid <- submit bob $ exerciseCmd req2 Execute with executor = bob
-  audit <- queryContractId bob auditCid
+  f <- setup2of3
+  req <- approvedTwice f
+  auditCid <- submit f.bob $ executeCmd f req f.bob
+  audit <- queryContractId f.bob auditCid
   case audit of
     Some a -> a.verb === "TRANSFER"
     None -> abort "AuditRecord was not created"
@@ -52,47 +87,45 @@ test_twoOfThree_executes = do
 -- 1-of-3 cannot execute a 2-of-3 request (threshold not met).
 test_oneOfThree_cannotExecute : Script ()
 test_oneOfThree_cannotExecute = do
-  (alice, bob, _carol, _op, polCid) <- setup2of3
-  req0 <- request alice polCid
-  req1 <- submit alice $ exerciseCmd req0 Approve with approver = alice
+  f <- setup2of3
+  req0 <- request f.alice f.policyCid
+  req1 <- submit f.alice $ exerciseCmd req0 Approve with approver = f.alice
   -- only one approval so far; any member executing must fail
-  submitMustFail bob $ exerciseCmd req1 Execute with executor = bob
+  submitMustFail f.bob $ executeCmd f req1 f.bob
 
 -- A non-member cannot approve.
 test_nonMember_cannotApprove : Script ()
 test_nonMember_cannotApprove = do
-  (alice, _bob, _carol, _op, polCid) <- setup2of3
+  f <- setup2of3
   dave <- allocateParty "Dave"
-  req0 <- request alice polCid
+  req0 <- request f.alice f.policyCid
   submitMustFail dave $ exerciseCmd req0 Approve with approver = dave
 
 -- The same party cannot approve twice.
 test_noDoubleApproval : Script ()
 test_noDoubleApproval = do
-  (alice, _bob, _carol, _op, polCid) <- setup2of3
-  req0 <- request alice polCid
-  req1 <- submit alice $ exerciseCmd req0 Approve with approver = alice
-  submitMustFail alice $ exerciseCmd req1 Approve with approver = alice
+  f <- setup2of3
+  req0 <- request f.alice f.policyCid
+  req1 <- submit f.alice $ exerciseCmd req0 Approve with approver = f.alice
+  submitMustFail f.alice $ exerciseCmd req1 Approve with approver = f.alice
 
 -- A request cannot be executed twice (Execute is consuming).
 test_noDoubleExecution : Script ()
 test_noDoubleExecution = do
-  (alice, bob, _carol, _op, polCid) <- setup2of3
-  req0 <- request alice polCid
-  req1 <- submit alice $ exerciseCmd req0 Approve with approver = alice
-  req2 <- submit bob $ exerciseCmd req1 Approve with approver = bob
-  _ <- submit bob $ exerciseCmd req2 Execute with executor = bob
+  f <- setup2of3
+  req <- approvedTwice f
+  _ <- submit f.bob $ executeCmd f req f.bob
   -- the ActionRequest is archived; re-executing the stale cid must fail
-  submitMustFail bob $ exerciseCmd req2 Execute with executor = bob
+  submitMustFail f.bob $ executeCmd f req f.bob
 
 -- The policy owner (operator), who is not a member, cannot bypass the
 -- threshold: they can neither approve nor execute.
 test_ownerCannotBypass : Script ()
 test_ownerCannotBypass = do
-  (alice, _bob, _carol, operator, polCid) <- setup2of3
-  req0 <- request alice polCid
-  submitMustFail operator $ exerciseCmd req0 Approve with approver = operator
-  submitMustFail operator $ exerciseCmd req0 Execute with executor = operator
+  f <- setup2of3
+  req0 <- request f.alice f.policyCid
+  submitMustFail f.operator $ exerciseCmd req0 Approve with approver = f.operator
+  submitMustFail f.operator $ executeCmd f req0 f.operator
 
 -- An invalid threshold (<= 0 or > member count) is rejected at creation.
 test_invalidThreshold_rejected : Script ()
@@ -118,11 +151,117 @@ test_invalidMembers_rejected = do
 -- A non-member cannot even open a request.
 test_nonMember_cannotRequest : Script ()
 test_nonMember_cannotRequest = do
-  (_alice, _bob, _carol, _op, polCid) <- setup2of3
+  f <- setup2of3
   dave <- allocateParty "Dave"
-  submitMustFail dave $ exerciseCmd polCid RequestAction with
+  submitMustFail dave $ exerciseCmd f.policyCid RequestAction with
     requester = dave
     verb = "TRANSFER"
     target = "vendor::party"
     detail = "Send 50,000 CC"
     reference = "REQ-1042"
+
+-- --- Resilience: hosting status is on-ledger -------------------------------
+
+-- An operator reports its own node offline; the new state is on the ledger.
+test_nodeReportsItselfOffline : Script ()
+test_nodeReportsItselfOffline = do
+  f <- setup2of3
+  cid <- submit f.nodeA $ exerciseCmd f.hostingCid ReportOffline with node = f.nodeA
+  hg <- queryContractId f.nodeA cid
+  case hg of
+    Some g -> g.offline === [f.nodeA]
+    None -> abort "HostingGroup disappeared"
+
+-- Nobody may report a node other than their own: the choice controller is the
+-- node itself, so a member cannot mark another operator's infrastructure down.
+test_cannotReportAnotherNodesStatus : Script ()
+test_cannotReportAnotherNodesStatus = do
+  f <- setup2of3
+  submitMustFail f.alice $ exerciseCmd f.hostingCid ReportOffline with node = f.nodeA
+
+-- A party that is not a hosting operator cannot report at all.
+test_strangerCannotReport : Script ()
+test_strangerCannotReport = do
+  f <- setup2of3
+  dave <- allocateParty "Dave"
+  submitMustFail dave $ exerciseCmd f.hostingCid ReportOffline with node = dave
+
+-- The same node cannot report offline twice (no duplicate state).
+test_doubleOfflineRejected : Script ()
+test_doubleOfflineRejected = do
+  f <- setup2of3
+  cid <- submit f.nodeA $ exerciseCmd f.hostingCid ReportOffline with node = f.nodeA
+  submitMustFail f.nodeA $ exerciseCmd cid ReportOffline with node = f.nodeA
+
+-- Reporting online while already online is rejected.
+test_reportOnlineWhenAlreadyOnline_rejected : Script ()
+test_reportOnlineWhenAlreadyOnline_rejected = do
+  f <- setup2of3
+  submitMustFail f.nodeA $ exerciseCmd f.hostingCid ReportOnline with node = f.nodeA
+
+-- Ineligible hosting configuration is rejected at creation.
+test_invalidHostingGroup_rejected : Script ()
+test_invalidHostingGroup_rejected = do
+  operator <- allocateParty "Operator"
+  alice <- allocateParty "Alice"
+  nodeA <- allocateParty "OperatorAlpha"
+  -- threshold below 1
+  submitMustFail operator $ createCmd HostingGroup with
+    operator; members = [alice]; application = "Treasury"
+    nodes = [nodeA]; threshold = 0; offline = []
+  -- threshold above the number of nodes
+  submitMustFail operator $ createCmd HostingGroup with
+    operator; members = [alice]; application = "Treasury"
+    nodes = [nodeA]; threshold = 2; offline = []
+  -- an "offline" node that is not in the group
+  submitMustFail operator $ createCmd HostingGroup with
+    operator; members = [alice]; application = "Treasury"
+    nodes = [nodeA]; threshold = 1; offline = [alice]
+
+-- THE core resilience invariant: with quorum met but only one of three
+-- operators online (threshold 2), execution is refused *on the ledger*.
+test_executeBlockedWhenUnderHosted : Script ()
+test_executeBlockedWhenUnderHosted = do
+  f <- setup2of3
+  req <- approvedTwice f
+  -- take two of the three operators down: 1 online < threshold 2. Each report
+  -- consumes the group and creates a new one, so the live id moves with it.
+  cid1 <- submit f.nodeA $ exerciseCmd f.hostingCid ReportOffline with node = f.nodeA
+  cid2 <- submit f.nodeB $ exerciseCmd cid1 ReportOffline with node = f.nodeB
+  let underHosted = f with hostingCid = cid2
+  submitMustFail f.bob $ executeCmd underHosted req f.bob
+  -- one comes back: 2 online >= threshold 2, execution is allowed again
+  cid3 <- submit f.nodeB $ exerciseCmd cid2 ReportOnline with node = f.nodeB
+  let recovered = f with hostingCid = cid3
+  _ <- submit f.bob $ executeCmd recovered req f.bob
+  pure ()
+
+-- The audit record captures the hosting state at execution time.
+test_auditRecordCapturesHosting : Script ()
+test_auditRecordCapturesHosting = do
+  f <- setup2of3
+  req <- approvedTwice f
+  cid1 <- submit f.nodeA $ exerciseCmd f.hostingCid ReportOffline with node = f.nodeA
+  let f2 = f with hostingCid = cid1
+  auditCid <- submit f.bob $ executeCmd f2 req f.bob
+  audit <- queryContractId f.bob auditCid
+  case audit of
+    Some a -> do
+      a.onlineOperators === 2
+      a.hostingThreshold === 2
+    None -> abort "AuditRecord was not created"
+
+-- An executor cannot point Execute at another application's hosting group.
+test_executeRejectsForeignHostingGroup : Script ()
+test_executeRejectsForeignHostingGroup = do
+  f <- setup2of3
+  req <- approvedTwice f
+  otherCid <- submit f.operator $ createCmd HostingGroup with
+    operator = f.operator
+    members = [f.alice, f.bob, f.carol]
+    application = "Something Else"
+    nodes = [f.nodeA, f.nodeB, f.nodeC]
+    threshold = 1
+    offline = []
+  submitMustFail f.bob $
+    exerciseCmd req Execute with executor = f.bob; hostingGroup = otherCid
