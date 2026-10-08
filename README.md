@@ -2,6 +2,10 @@
 
 Decentralized control infrastructure for Canton applications.
 
+**Live:** https://resilix-weld.vercel.app — the console, self-contained. It runs the in-memory
+ledger, because no Canton participant is reachable from the public internet, so every flow is
+playable end to end; the recorded demo shows the same flows against a real Daml 3.x participant.
+
 Resilix is a **reusable control layer** for Canton apps. Instead of shipping one
 treasury product, it lets any application define who can act, how many parties must approve,
 which operators host the Decentralized Party, what happens when an operator disappears, and how

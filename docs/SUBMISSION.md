@@ -124,6 +124,11 @@ the exact Daml guards — useful for a zero-dependency demo.
 
 ## The rest of the submission
 
+**Live:** https://resilix-weld.vercel.app — the console, running self-contained on the in-memory
+ledger. Nothing on the public internet can reach a Canton participant, so the deployed instance
+plays every flow locally; the on-ledger path (Daml 3.x, JSON Ledger API v2) is what the recorded
+demo and `npm run verify:ledger` exercise.
+
 | Document | What it is |
 | --- | --- |
 | [`PITCH.md`](PITCH.md) | The one-page argument: the question, the answer, the three claims and their evidence |
