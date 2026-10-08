@@ -165,6 +165,47 @@ build resolves after installing the SDK alone. Two packages fixed it.
 
 ---
 
+## 2026-10-08 — the mix that undid itself
+
+The demo video needed a voice-over, and the obvious way to write one is a second
+document: a script, with timecodes, kept in sync with the picture by hand. That is
+a promise to break. The captions were already the script — one sentence per beat,
+injected at the moment the beat happens — so the narration is generated *from*
+them. There is one source of truth, and editing a caption edits the voice.
+
+**The mistake was the loudness normaliser.** The first narrated mix measured
+-16 LUFS, hit its target exactly, and was wrong: the voice sat about 3 dB above the
+music in the speech band, which is not narration, it is two things talking at once.
+The cause was the `loudnorm` at the end of the chain. A single-pass loudness
+normaliser applies *dynamic* gain — it lifts quiet passages and pulls down loud ones
+— and the music had been deliberately ducked under the voice. So the normaliser
+lifted the music back up, in exactly the moments the voice was speaking, undoing the
+duck that had just been applied. Two correct stages, one incoherent result.
+
+What settled it was isolating the duck: a 60 Hz tone ducked by a 1 kHz burst, which
+showed 9.8 dB of gain reduction. The compressor worked. That meant the loss had to
+be happening downstream, and there was only one thing downstream.
+
+The fix is duller and better: normalise the *voice* on its own to a known level,
+place the bed at a fixed level beneath it, duck the bed, sum, and then apply **one
+static gain** — measured from a first render and used in a second — plus a peak
+guard. Nothing in the chain moves once the balance is set. Separation went from 3 dB
+to 9 dB, and the loudness range went from 4.2 LU to 9.6 LU: the mix breathes now,
+because nothing is levelling it.
+
+**Two smaller things, both caught by measuring rather than by looking.** `-shortest`
+silently dropped the video's last 8 frames, because the limiter's lookahead makes the
+audio marginally shorter than the picture — the audio is now padded and trimmed to
+exactly the video's length. And the first honest measurement of the voice band was
+misleading in the other direction: measuring below 60 Hz to isolate the music, the
+narrator's own fundamental sits in the band, so the number moved the wrong way and
+looked like a broken duck.
+
+The pattern held: **what was wrong was not the parts, it was the composition** — and
+only measuring the whole could show it.
+
+---
+
 ## What is deliberately not here
 
 - **A treasury balance.** The console has no account balance and neither do the

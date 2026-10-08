@@ -106,8 +106,9 @@ A narrated, hands-free walkthrough of a single protected action moving through a
 pillars is at **`/demo`** (runs on the in-memory model, so it always plays).
 
 A recorded screencast of the console driving the live ledger is produced by
-`npm run demo:video` (needs the ledger up and the app on `:3200`) — the shot list and
-the narrated alternative are in **[docs/VIDEO.md](docs/VIDEO.md)**.
+`npm run demo:video` (needs the ledger up and the app on `:3200`) — captioned and
+narrated, with the voice-over generated from the captions themselves. The shot
+list and the alternatives are in **[docs/VIDEO.md](docs/VIDEO.md)**.
 
 The reasoning behind the design, and the things that turned out to be wrong, are in
 **[docs/JOURNAL.md](docs/JOURNAL.md)**; the one-page argument is

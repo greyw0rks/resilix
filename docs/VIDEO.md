@@ -8,20 +8,39 @@ ledger refusing.
 
 ## Two ways to produce it
 
-**Automated.** `npm run demo:video` records a captioned screencast of the real
-console driving the live ledger — it clicks the same buttons the shot list below
-describes, injects the captions into the page, and encodes with ffmpeg, giving
-`brag-output/demo.mp4` (~2:58) plus a `.jpg` poster and a `.srt` caption track. No
-narration: it is a silent, captioned walkthrough. Requirements and caveats are in
-the script header (`scripts/demo-video.mjs`); it needs a live ledger, the app
-running in live mode on `:3200`, and a Chromium (`CHROME_BIN` overrides the
-default).
+**Automated, with narration.** `npm run demo:video` records a captioned
+screencast of the real console driving the live ledger — it clicks the same
+buttons the shot list below describes, injects the captions into the page, and
+encodes with ffmpeg, giving `brag-output/demo.mp4` (~2:58) plus a `.jpg` poster,
+a `.srt` caption track and a `.srt` of the voice-over's own timings.
 
-**Narrated.** Record a voice-over take from the shot list below. The automated
-recording is a good scaffold to record against — play it and speak the lines under
-each caption — but a narrated take with the two-window approval (below) is stronger,
-because the shared-control point lands better when the two approvals visibly come
-from two separate browsers.
+The narration is *generated from the captions*, because the captions are already
+the script: one sentence per beat, on screen at the moment the beat happens.
+`scripts/voiceover.mjs` speaks each one at its caption's time and the score is
+mixed under it, so editing a caption edits the narration — there is no second
+script to keep in sync. The voice is `edge-tts` (free, no account, no key):
+
+```bash
+uv tool install edge-tts      # or: pipx install edge-tts
+VOICE=en-US-AndrewNeural npm run demo:video   # pick a different voice
+```
+
+If `edge-tts` is missing or offline, the run still produces the video — it warns
+and scores it with music and cues only, rather than failing on its soundtrack.
+`--no-vo` asks for that deliberately.
+
+Requirements and caveats are in the script header (`scripts/demo-video.mjs`); it
+needs a live ledger, the app running in live mode on `:3200`, and a Chromium
+(`CHROME_BIN` overrides the default).
+
+**Your own voice.** Read the shot list below over the same recording — play the
+automated cut and speak the lines under each caption. A human take is warmer than
+a synthesised one, and worth it if you have the time; the captioned version is
+already a complete artifact if you do not.
+
+The strongest version of the shared-control shot is the two-window approval
+described below: the point lands better when the two approvals visibly come from
+two separate browsers than when they come from one page talking to itself.
 
 ## Before recording
 

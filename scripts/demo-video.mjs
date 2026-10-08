@@ -13,13 +13,15 @@
 //
 // Prereqs: a live ledger (`npm run ledger:up`) and the app running in live mode
 // with the current .env.local (`npm run build && npx next start -p 3200`).
-// Usage:   node scripts/demo-video.mjs [--keep]
-// Output:  brag-output/demo.mp4 (plus .jpg poster and .srt captions)
+// Usage:   node scripts/demo-video.mjs [--keep] [--no-vo]
+// Output:  brag-output/demo.mp4 (plus .jpg poster, .srt captions, voice-over)
 
 import { spawn } from 'node:child_process';
-import { mkdir, rm, writeFile, stat } from 'node:fs/promises';
+import { mkdir, rm, writeFile, readFile, stat, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+
+import { narrate, writeNarrationSrt } from './voiceover.mjs';
 
 const APP_URL = process.env.DEMO_URL ?? 'http://localhost:3200';
 const OUT_DIR = process.env.DEMO_OUT_DIR ?? 'brag-output';
@@ -357,7 +359,7 @@ async function main() {
   await run('ffmpeg', ['-y', '-loglevel', 'error', '-ss', String(duration * 0.45), '-i', OUT_MP4, '-frames:v', '1', '-q:v', '3', OUT_POSTER]);
 
   await writeFile(OUT_SRT, toSrt(cues, duration));
-
+  await addScore(duration, cues);
   const size = (await stat(OUT_MP4)).size;
   console.log(`==> wrote ${OUT_MP4} (${(size / 1e6).toFixed(1)} MB, ${duration.toFixed(0)}s)`);
   console.log(`==> wrote ${OUT_POSTER} and ${OUT_SRT}`);
@@ -373,6 +375,227 @@ function run(cmd, args) {
     p.on('error', reject);
     p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
   });
+}
+
+// Integrated loudness of a rendered mix, in LUFS. loudnorm prints its
+// measurement as JSON on stderr — the same number the two-pass mode would
+// consume, read here so the gain can be applied as a constant.
+function measureLoudness(file) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('ffmpeg', [
+      '-hide_banner', '-i', file,
+      '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json',
+      '-f', 'null', '-',
+    ]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d));
+    p.stdout.on('data', () => {});
+    p.on('error', reject);
+    p.on('exit', (code) => {
+      if (code !== 0) return reject(new Error('could not measure the mix'));
+      const m = /"input_i"\s*:\s*"?(-?[\d.]+)"?/.exec(err);
+      if (!m) return reject(new Error('loudnorm returned no measurement'));
+      resolve(Number(m[1]));
+    });
+  });
+}
+
+// --- the score ---------------------------------------------------------------
+//
+// A silent screencast is a weaker artifact than it needs to be, and the project
+// already owns the audio: `brag-output/composition/assets` carries a music bed
+// and four cues (tick, node-fail, confirm, reveal) made for the brag video. This
+// lays them under the recording at the moments the caption says they happen, so
+// no API key or external service is involved.
+//
+// Cues are matched to the caption text rather than to hard-coded seconds: the
+// recording's timings shift by a few seconds between takes, and a sound that
+// lands a beat late is worse than no sound.
+
+const ASSETS = path.join(OUT_DIR, 'composition', 'assets');
+const MUSIC = path.join(ASSETS, 'music', 'bed.mp3');
+const SFX = {
+  tick: path.join(ASSETS, 'sfx', 'tick.ogg'),
+  fail: path.join(ASSETS, 'sfx', 'node-fail.ogg'),
+  confirm: path.join(ASSETS, 'sfx', 'confirm.ogg'),
+  reveal: path.join(ASSETS, 'sfx', 'reveal.ogg'),
+};
+
+// Which cue earns which sound. Every delay is applied from the start of the
+// video, so the order of this list does not matter.
+//
+// These sit under the narration, and each one lands on the caption that
+// describes the same event — which is exactly when the voice is speaking. So
+// the gains are set for a bed that the voice has already pushed down, not for
+// a bare music track; a cue that only matches the music is a cue nobody hears.
+const CUES = [
+  { match: 'Alice approves', sfx: 'tick', gain: 0.5 },
+  { match: 'Bob — a different operator', sfx: 'tick', gain: 0.5 },
+  { match: 'Node A goes down', sfx: 'fail', gain: 0.85 },
+  { match: 'Node B too', sfx: 'fail', gain: 0.85 },
+  { match: 'Bring the operator back', sfx: 'confirm', gain: 0.8 },
+  { match: 'Executed, and recorded', sfx: 'confirm', gain: 0.8 },
+  { match: 'Canton Resilience: decentralized control', sfx: 'reveal', gain: 0.9 },
+];
+
+// The bed, before the voice ducks it. Loud enough to be music in the gaps,
+// far enough under the speech to stay music while the speech is happening.
+const BED = 0.26;
+
+// Speech is normalised on its own to a known level, so the bed's level above is
+// a real decision rather than a guess about how loud edge-tts happens to be.
+const VOICE_LUFS = -16;
+
+// What the finished soundtrack should measure. -16 LUFS integrated is the usual
+// target for a narrated web video — clear on a laptop, not squashed.
+const TARGET_LUFS = -16;
+
+// Speech is the loudest thing here and must stay intelligible; the bed gives
+// way for it. This is a real duck, not a level difference: the music recovers
+// in the gaps, so the score still breathes between sentences.
+const DUCK = 'threshold=0.008:ratio=14:attack=5:release=320:makeup=1';
+
+// Narration is on by default — the captions are the script, so the video is
+// already written. `--no-vo` records the silent captioned take.
+const VOICEOVER = !process.argv.includes('--no-vo');
+
+async function addScore(duration, cues) {
+  if (!existsSync(MUSIC) || Object.values(SFX).some((f) => !existsSync(f))) {
+    log('no audio assets found — leaving the video silent');
+    return;
+  }
+
+  // Slight lead-in so a cue lands with the caption rather than after it.
+  const hits = [];
+  for (const c of CUES) {
+    const cue = cues.find((x) => x.text.includes(c.match));
+    if (!cue) {
+      log(`no caption matched "${c.match}" — skipping its cue`);
+      continue;
+    }
+    if (!existsSync(SFX[c.sfx])) continue;
+    hits.push({ at: Math.max(0, cue.t - 0.12), file: SFX[c.sfx], gain: c.gain });
+  }
+
+  // The captions are the narration script, so this is the same list the SRT was
+  // built from — one line per beat, spoken at the moment the beat happens.
+  const vo = VOICEOVER ? await narrate(cues, OUT_DIR, { log }) : [];
+  if (vo.length) await writeNarrationSrt(vo, cues, path.join(OUT_DIR, 'demo-vo.srt'));
+
+  if (hits.length === 0 && vo.length === 0) {
+    log('nothing to score — leaving the video silent');
+    return;
+  }
+
+  console.log(
+    `==> scoring (music bed${hits.length ? ` + ${hits.length} cues` : ''}` +
+      `${vo.length ? ` + ${vo.length} narrated lines` : ''})`,
+  );
+  const fadeOut = Math.max(1, Math.min(5, duration - 8));
+  const inputs = ['-stream_loop', '-1', '-i', MUSIC];
+  for (const l of vo) inputs.push('-i', l.file);
+  for (const h of hits) inputs.push('-i', h.file);
+
+  // `gainDb` is the one thing that differs between the two renders below.
+  const graph = (gainDb) => {
+    const parts = [
+      // The bed is longer than a short take but not this one, so it loops; trim
+      // to length and sit it under everything else.
+      `[0:a]atrim=0:${duration.toFixed(3)},volume=${BED},` +
+        `afade=t=in:st=0:d=2,afade=t=out:st=${(duration - fadeOut).toFixed(3)}:d=${fadeOut}[music]`,
+    ];
+
+    // Narration and cues arrive at 24 kHz mono (edge-tts) and at whatever the
+    // asset happens to be, so each branch is forced to one format before mixing
+    // — amix does not reconcile layouts, it just takes the first input's.
+    const fmt = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
+    vo.forEach((l, i) => {
+      const ms = Math.round(l.at * 1000);
+      parts.push(`[${i + 1}:a]${fmt},adelay=${ms}|${ms}[vo${i}]`);
+    });
+    hits.forEach((h, i) => {
+      const ms = Math.round(h.at * 1000);
+      parts.push(`[${vo.length + i + 1}:a]${fmt},adelay=${ms}|${ms},volume=${h.gain}[h${i}]`);
+    });
+
+    const cueMix = hits.map((_, i) => `[h${i}]`).join('');
+    let bedOut = '[music]';
+
+    if (vo.length) {
+      const voiced = vo.map((_, i) => `[vo${i}]`).join('');
+      // The voice is normalised on its own, before it is placed: a known speech
+      // level is what makes the bed's level a decision rather than a guess.
+      const sums =
+        (vo.length > 1
+          ? `${voiced}amix=inputs=${vo.length}:duration=longest:normalize=0`
+          : voiced) + `,loudnorm=I=${VOICE_LUFS}:TP=-4:LRA=11`;
+      // Then padded to the full length: the sidechain needs an input at least as
+      // long as the bed, and a mix that changed length would drag the video with
+      // it. Split because this stream is both the ducking trigger and part of
+      // the mix, and a filter output only feeds one input.
+      parts.push(`${sums},apad,atrim=0:${duration.toFixed(3)},asplit=2[vomix][voside]`);
+      parts.push(`[music][voside]sidechaincompress=${DUCK}[musicduck]`);
+      bedOut = '[musicduck]';
+    }
+
+    // Summed, then given one static gain and a peak guard. Deliberately NOT
+    // normalised here: a dynamic loudnorm would raise the bed back up in the
+    // exact moments the voice ducks it, undoing the mix it is applied to. The
+    // gain is measured from a first render and applied to a second, which is
+    // how you get a constant offset instead of a level that moves.
+    //
+    // Padded and trimmed back to exactly the video's length at the end: the
+    // limiter's lookahead delays the tail, and an audio stream that comes up
+    // short makes the muxer drop the video's last frames to match it.
+    const mix = `${bedOut}${vo.length ? '[vomix]' : ''}${cueMix}`;
+    const count = 1 + (vo.length ? 1 : 0) + hits.length;
+    parts.push(
+      `${mix}amix=inputs=${count}:duration=first:normalize=0,` +
+        `volume=${gainDb.toFixed(2)}dB,alimiter=limit=0.794:level=disabled,` +
+        `apad,atrim=0:${duration.toFixed(3)},aresample=48000[aout]`,
+    );
+    return parts.join(';');
+  };
+
+  // Pass one: render the mix flat so it can be measured. This is a measurement,
+  // not an artifact — no encoder settings to get wrong.
+  const probe = path.join(OUT_DIR, 'demo-mix.wav');
+  await run('ffmpeg', [
+    '-y', '-loglevel', 'error', ...inputs,
+    '-filter_complex', graph(0), '-map', '[aout]', '-c:a', 'pcm_s16le', probe,
+  ]);
+  const measured = await measureLoudness(probe);
+  await rm(probe, { force: true });
+
+  const gainDb = Math.max(-20, Math.min(20, TARGET_LUFS - measured));
+  log(`mix measured ${measured.toFixed(1)} LUFS → ${gainDb >= 0 ? '+' : ''}${gainDb.toFixed(1)} dB`);
+
+  const m4a = path.join(OUT_DIR, 'demo-audio.m4a');
+  await run('ffmpeg', [
+    '-y', '-loglevel', 'error',
+    ...inputs,
+    '-filter_complex', graph(gainDb),
+    '-map', '[aout]',
+    '-c:a', 'aac', '-b:a', '160k',
+    m4a,
+  ]);
+
+  const scored = path.join(OUT_DIR, 'demo-scored.mp4');
+  await run('ffmpeg', [
+    '-y', '-loglevel', 'error',
+    '-i', OUT_MP4, '-i', m4a,
+    '-map', '0:v', '-map', '1:a',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
+    '-movflags', '+faststart',
+    scored,
+  ]);
+  await rename(scored, OUT_MP4);
+  await rm(m4a, { force: true });
+  log(
+    `scored: ${[vo.length && `${vo.length} narrated lines`, hits.length && `${hits.length} cues`, 'music bed']
+      .filter(Boolean)
+      .join(' + ')}`,
+  );
 }
 
 // Minimal SRT from the cue list: the captions are the narration, so a subtitle
@@ -393,7 +616,53 @@ function toSrt(cues, duration) {
     .join('\n');
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Re-score an existing recording from its subtitle track, without re-recording:
+//
+//   node scripts/demo-video.mjs --score-only
+//
+// The captions are the cue list, so the .srt written by a normal run is enough
+// to place the audio — which makes iterating on the mix a few seconds' work
+// instead of a full take.
+function cuesFromSrt(srt) {
+  const out = [];
+  for (const block of srt.split(/\n\s*\n/)) {
+    const m = /^(\d+):(\d\d):(\d\d),(\d\d\d)\s*-->/.exec(block.trim().split('\n')[1] ?? '');
+    const text = block.trim().split('\n').slice(2).join(' ').trim();
+    if (!m || !text) continue;
+    const t = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000;
+    out.push({ t, text });
+  }
+  return out;
+}
+
+async function scoreOnly() {
+  const srt = await readFile(OUT_SRT, 'utf8').catch(() => null);
+  if (!srt) {
+    console.error(`No ${OUT_SRT} — record first (npm run demo:video), then re-score.`);
+    process.exit(1);
+  }
+  const cues = cuesFromSrt(srt);
+  const last = cues.at(-1);
+  const { stdout } = await new Promise((resolve, reject) => {
+    const p = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', OUT_MP4]);
+    let out = '';
+    p.stdout.on('data', (d) => (out += d));
+    p.on('error', reject);
+    p.on('exit', (code) => (code === 0 ? resolve({ stdout: out }) : reject(new Error('ffprobe failed'))));
+  });
+  const duration = Number(stdout.trim()) || (last?.t ?? 0) + 5;
+  console.log(`==> re-scoring ${OUT_MP4} (${duration.toFixed(1)}s, ${cues.length} captions)`);
+  await addScore(duration, cues);
+}
+
+if (process.argv.includes('--score-only')) {
+  scoreOnly().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+} else {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
