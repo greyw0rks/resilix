@@ -13,7 +13,8 @@
 //
 // Prereqs: a live ledger (`npm run ledger:up`) and the app running in live mode
 // with the current .env.local (`npm run build && npx next start -p 3200`).
-// Usage:   node scripts/demo-video.mjs [--keep] [--no-vo]
+// Usage:   node scripts/demo-video.mjs [--no-vo] [--dry]
+//          DEMO_SPEED=0.1 node scripts/demo-video.mjs --dry   # fast beat check
 // Output:  brag-output/demo.mp4 (plus .jpg poster, .srt captions, voice-over)
 
 import { spawn } from 'node:child_process';
@@ -41,6 +42,13 @@ const CANDIDATE_BROWSERS = [
 
 const CHROME = CANDIDATE_BROWSERS.find((p) => existsSync(p));
 const CHROME_LIBS = `${process.env.HOME}/.local/chromedeps/root/usr/lib/x86_64-linux-gnu`;
+
+// --dry runs the whole beat sequence with its assertions and stops before
+// encoding; DEMO_SPEED scales the captions' dwell so a dry run takes seconds.
+// Every assertion is about state, not timing, so a fast pass proves the same
+// thing the slow one would — without a five-minute wait to find a typo in one.
+const DRY = process.argv.includes('--dry');
+const SPEED = Number(process.env.DEMO_SPEED ?? 1);
 
 const log = (...a) => console.log('   ', ...a);
 const ms = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -130,9 +138,52 @@ const SCROLL_TO = (selector) => `(() => {
   return 'OK';
 })()`;
 
+// Click within one panel. The whole page is searched by CLICK, and the hero
+// draws the same operator names as the hosting panel, so an unscoped match can
+// hit a decorative node chip instead of the control.
+const CLICK_IN = (scope, match) => `(() => {
+  const root = document.querySelector(${JSON.stringify(scope)});
+  if (!root) return 'NO-SCOPE::' + ${JSON.stringify(scope)};
+  const m = ${JSON.stringify(match)};
+  const els = [...root.querySelectorAll('button,a')];
+  const hit = els.find(e => (e.textContent || '').replace(/\\s+/g, ' ').trim().includes(m));
+  if (!hit) return 'NOT-FOUND::' + m;
+  if (hit.disabled) return 'DISABLED::' + m;
+  hit.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  hit.click();
+  return 'OK';
+})()`;
+
 const READY = `(() => {
   const t = document.body.innerText || '';
   return t.includes('Shared control') && t.includes('Distributed hosting');
+})()`;
+
+// The caption overlay is in the DOM too, so reading body.innerText would let a
+// caption satisfy a check that is meant to be about the application. Hide it
+// for the read.
+const TEXT = `(() => {
+  const c = document.getElementById('${CAPTION_ID}');
+  const prev = c ? c.style.display : '';
+  if (c) c.style.display = 'none';
+  const t = document.body.innerText || '';
+  if (c) c.style.display = prev;
+  return t;
+})()`;
+// Case-insensitive on purpose: innerText reflects CSS text-transform, so a
+// Pill styled `uppercase` reads "QUORUM MET" on screen while its source says
+// "Quorum met". Matching the source text should not depend on styling.
+const has = (text) => `(${TEXT}).toLowerCase().includes(${JSON.stringify(text.toLowerCase())})`;
+
+// A caption is a claim about what is on screen. This waits for the claim to
+// become true before the caption is allowed to make it.
+const WAIT_FOR = (expr, seconds = 25) => `(async () => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ${seconds * 1000}) {
+    if (${expr}) return 'OK';
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return 'TIMEOUT';
 })()`;
 
 // --- capture ----------------------------------------------------------------
@@ -150,6 +201,43 @@ async function main() {
     console.error('No ledger at :7575 — run `npm run ledger:up` first.');
     process.exit(1);
   }
+
+  // Refuse to record against a used ledger.
+  //
+  // `executed` is derived from the presence of an AuditRecord
+  // (app/api/ledger/route.ts), and AuditRecords are immutable and never
+  // archived — so once an application has been executed on a ledger it reports
+  // executed forever. Recording in that state produces a video whose captions
+  // describe a flow the screen is not showing: no Execute button to click, the
+  // approval and node controls locked, and a "quorum met" caption over an
+  // untouched request. The first cut of this video was shot that way.
+  const api = async (body) =>
+    fetch(`${APP_URL}/api/ledger`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then((r) => r.json())
+      .catch(() => null);
+
+  const appId = 'treasury';
+  const [v0, h0] = await Promise.all([api({ op: 'view', appId }), api({ op: 'hosting', appId })]);
+  const stale = !v0?.view
+    ? ['the app did not answer /api/ledger — is it running in live mode on ' + APP_URL + '?']
+    : [
+        v0.view.executed && 'the treasury action has already been executed on this ledger',
+        v0.view.approvals?.length && `${v0.view.approvals.length} approval(s) already recorded`,
+        h0?.hosting?.offline?.length && `operator(s) ${h0.hosting.offline.join(', ')} already offline`,
+      ].filter(Boolean);
+  if (stale.length) {
+    console.error('\nThe ledger is not in a clean state to record on:');
+    for (const s of stale) console.error(`  - ${s}`);
+    console.error('\nStart a fresh one, then re-run:');
+    console.error('  npm run ledger:stop && npm run ledger:up   # fresh sandbox + parties, rewrites .env.local');
+    console.error('  npx next start -p 3200                    # the app reads the party map at startup\n');
+    process.exit(1);
+  }
+  log('ledger is clean: no approvals, no audit record, all operators online');
 
   await rm(FRAMES, { recursive: true, force: true });
   await mkdir(FRAMES, { recursive: true });
@@ -257,12 +345,26 @@ async function main() {
     cues.push({ t: (Date.now() - t0) / 1000, text });
     log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${text}`);
     await evaluate(SET_CAPTION(text));
-    await ms(seconds);
+    await ms(seconds * SPEED);
   };
   const act = async (label, expr) => {
     const result = await evaluate(expr).catch((e) => 'ERROR::' + e.message);
     if (result !== 'OK') log(`  !! ${label}: ${result}`);
     return result;
+  };
+  // A beat the captions depend on. If the screen never reaches it, stop — the
+  // alternative is a video that describes something that did not happen.
+  const expect = async (label, expr, seconds = 25) => {
+    const r = await evaluate(WAIT_FOR(expr, seconds)).catch((e) => 'ERROR::' + e.message);
+    if (r !== 'OK') {
+      await writing;
+      await cdp.send('Page.stopScreencast').catch(() => {});
+      chrome.kill('SIGKILL');
+      console.error(`\nStopped: "${label}" never happened on screen (${r}).`);
+      console.error('The captions describe it, so the recording cannot go on.\n');
+      process.exit(1);
+    }
+    log(`ok  ${label}`);
   };
 
   // 1 — the question
@@ -272,38 +374,45 @@ async function main() {
 
   // 2 — what this is
   await act('scroll to applications', SCROLL_TO('#applications'));
-  await scene('Canton Resilience — a reusable control layer for Canton applications.', 8);
+  await scene('Resilix — a reusable control layer for Canton applications.', 8);
   await scene('Policy, multi-party approval, resilient hosting, and audit.', 6);
   await scene('The header reads json-api. Every click from here is a real Daml command.', 8);
 
   // 3 — shared control
   await act('scroll to approvals', SCROLL_TO('#approvals'));
   await scene('Shared control: two of three parties must approve this transfer.', 6);
-  await act('approve alice', CLICK('Alice'));
+  await act('approve alice', CLICK_IN('#approvals', 'Alice'));
+  await expect('alice approved — one of two', has('1 of 2 required'));
   await scene('Alice approves. One of two — execution is still blocked.', 7);
   await scene('And that block is on the ledger, not in this UI.', 5);
-  await act('approve bob', CLICK('Bob'));
+  await act('approve bob', CLICK_IN('#approvals', 'Bob'));
+  await expect('quorum met', has('Quorum met'));
   await scene('Bob — a different operator, a different party. Quorum met.', 8);
 
   // 4 — distributed hosting
   await act('scroll to hosting', SCROLL_TO('#hosting'));
   await scene('Independently: three hosting operators, two must stay online.', 7);
   await scene('Each operator reports its own node. No admin acts for it.', 6);
-  await act('node A offline', CLICK('Node A'));
+  await act('node A offline', CLICK_IN('#hosting', 'Node A'));
+  await expect('node A down — two of three still online', has('2/3 operators online'));
   await scene('Node A goes down. Two of three — the application stays available.', 8);
   await scene('One operator disappearing is not an incident.', 5);
-  await act('node B offline', CLICK('Node B'));
+  await act('node B offline', CLICK_IN('#hosting', 'Node B'));
+  await expect('below threshold — unavailable', has('Application unavailable'));
   await scene('Node B too. One of three — below threshold, and now unavailable.', 7);
   await scene('The contract itself refuses to execute below threshold.', 7);
 
   // 5 — recovery, then who signs
-  await act('node B online', CLICK('Node B'));
+  await act('node B online', CLICK_IN('#hosting', 'Node B'));
+  await expect('operator back — available again', has('Application remains available'));
   await scene('Bring the operator back, and it is permitted again.', 7);
-  await act('connect wallet', CLICK('Connect Grofty'));
+  await act('connect wallet', CLICK_IN('header', 'Connect Grofty'));
   await scene('The approval and the execution are authorized by the user\'s own Canton party.', 7);
   await act('demo signer', CLICK('Use the demo signer'));
+  await expect('stand-in signer connected', `!(${has('Use the demo signer')})`);
   await scene('No wallet in this browser — and the console says so rather than pretending.', 9);
   await act('execute', CLICK('Execute'));
+  await expect('execution recorded on the ledger', has('no signature (demo)'));
   await scene('Executed, and recorded on the ledger.', 8);
 
   // 6 — audit, and that it is not local state
@@ -321,7 +430,14 @@ async function main() {
 
   // 7 — close
   await act('scroll to top', `(() => { window.scrollTo({top:0,behavior:'smooth'}); return 'OK'; })()`);
-  await scene('Canton Resilience: decentralized control, enforced by the ledger — and proven on one.', 9);
+  await scene('Resilix: decentralized control, enforced by the ledger — and proven on one.', 9);
+
+  if (DRY) {
+    await cdp.send('Page.stopScreencast').catch(() => {});
+    chrome.kill('SIGKILL');
+    console.log('==> dry run: every beat landed. Nothing encoded.');
+    process.exit(0);
+  }
 
   await writing;
   await cdp.send('Page.stopScreencast').catch(() => {});
@@ -435,7 +551,7 @@ const CUES = [
   { match: 'Node B too', sfx: 'fail', gain: 0.85 },
   { match: 'Bring the operator back', sfx: 'confirm', gain: 0.8 },
   { match: 'Executed, and recorded', sfx: 'confirm', gain: 0.8 },
-  { match: 'Canton Resilience: decentralized control', sfx: 'reveal', gain: 0.9 },
+  { match: 'Resilix: decentralized control', sfx: 'reveal', gain: 0.9 },
 ];
 
 // The bed, before the voice ducks it. Loud enough to be music in the gaps,

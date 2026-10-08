@@ -14,6 +14,12 @@ buttons the shot list below describes, injects the captions into the page, and
 encodes with ffmpeg, giving `brag-output/demo.mp4` (~2:58) plus a `.jpg` poster,
 a `.srt` caption track and a `.srt` of the voice-over's own timings.
 
+Every beat is asserted before its caption is allowed to appear: the recorder
+waits for the ledger's own state to show up on screen (`1 of 2 required`, then
+`Quorum met`, then `Application unavailable`, then `no signature (demo)`) and
+**stops** if it never does. A caption is a claim, so a beat that does not land is
+a failed recording rather than a video that quietly describes something else.
+
 The narration is *generated from the captions*, because the captions are already
 the script: one sentence per beat, on screen at the moment the beat happens.
 `scripts/voiceover.mjs` speaks each one at its caption's time and the score is
@@ -45,9 +51,21 @@ two separate browsers than when they come from one page talking to itself.
 ## Before recording
 
 ```bash
-npm run ledger:up        # live Canton sandbox, parties, policies — writes .env.local
-npm run dev              # http://localhost:3000 — header must read "json-api"
+npm run ledger:stop && npm run ledger:up   # fresh sandbox, parties, policies — writes .env.local
+npm run dev                                # http://localhost:3000 — header must read "json-api"
 ```
+
+**Start from a fresh ledger.** `executed` is read from the presence of an
+`AuditRecord` (`app/api/ledger/route.ts`), and audit records are immutable and
+never archived — so an application that has been executed once on a ledger
+reports executed forever. Record against that state and you get a video whose
+captions describe a flow the screen is not showing: no Execute button to click,
+the approval and node controls locked, a "quorum met" caption over an untouched
+request. `npm run demo:video` checks for exactly this before it starts and
+refuses to record on a used ledger.
+
+For the same reason, restart the app after `ledger:up`: the party map is read
+once at startup, and a fresh ledger allocates new parties.
 
 Two browser windows side by side is the cheapest way to show that approvals are
 independent operators, not one page talking to itself. Window A approves as **Alice**;
@@ -74,7 +92,7 @@ Leave the **Network** tab of devtools open in one window for the shot at 1:55.
 
 *Screen: scroll the four reference applications in the switcher.*
 
-> "Canton Resilience is a reusable control layer for Canton applications: policy,
+> "Resilix is a reusable control layer for Canton applications: policy,
 > multi-party approval, resilient hosting, and audit. The treasury is the reference
 > app — the layer is the product. The same contracts protect all four of these, and
 > switching applications switches the on-ledger policy it drives."
@@ -167,7 +185,7 @@ server route submits — on a network the wallet is on, the wallet path takes ov
 
 *Screen: wordmark, or the `/demo` walkthrough running.*
 
-> "Canton Resilience: applications that survive an operator failure and cannot be
+> "Resilix: applications that survive an operator failure and cannot be
 > moved by one party. Decentralized control, enforced by the ledger and proven on
 > one."
 

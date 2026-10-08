@@ -1,6 +1,6 @@
 import type { DemoApplication, LedgerAuditRecord } from './types';
 
-// Ledger abstraction for the Canton Resilience control layer.
+// Ledger abstraction for the Resilix control layer.
 //
 // The UI never talks to a participant directly — it goes through this
 // interface. `InMemoryLedger` reproduces the exact guards of the Daml

@@ -1,4 +1,4 @@
-// Wallet / signing seam for Canton Resilience.
+// Wallet / signing seam for Resilix.
 //
 // The privileged action is authorized by the acting party's Canton wallet — the
 // hackathon target is **Grofty**. `GroftyWallet` below is a real adapter over the

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Canton Resilience — LocalNet bring-up (Daml 3.x, JSON Ledger API v2).
+# Resilix — LocalNet bring-up (Daml 3.x, JSON Ledger API v2).
 #
 # Builds the DAR, starts a Canton sandbox that serves both the gRPC Ledger API
 # and the HTTP JSON Ledger API v2 (no separate `daml json-api` process — that
@@ -20,7 +20,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAML_DIR="$ROOT/daml"
-DAR="$DAML_DIR/.daml/dist/canton-resilience-0.1.0.dar"
+DAR="$DAML_DIR/.daml/dist/resilix-0.1.0.dar"
 LEDGER_PORT=6865
 JSON_PORT=7575
 INIT_OUT="$ROOT/.localnet-init.json"
@@ -41,6 +41,22 @@ stop() {
   exit 0
 }
 [ "${1:-}" = "stop" ] && stop
+
+# A second bring-up must not leave the previous sandbox running. The new one
+# cannot bind the ports, so it would die while every readiness check below
+# passed against the *old* ledger — which still holds the previous run's
+# contracts, approvals and audit records. That is how a demo gets recorded
+# against state in which its own action has already happened.
+if [ -f "$PIDS_FILE" ]; then
+  echo "==> stopping the previous sandbox"
+  while read -r pid; do kill "$pid" 2>/dev/null || true; done < "$PIDS_FILE"
+  rm -f "$PIDS_FILE"
+  # Wait for the JSON API to actually stop answering before claiming the port.
+  for _ in $(seq 1 30); do
+    curl -sf --max-time 1 "http://localhost:$JSON_PORT/livez" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+fi
 
 command -v daml >/dev/null || { echo "ERROR: 'daml' not on PATH — see docs/LOCALNET.md"; exit 1; }
 command -v java >/dev/null || { echo "ERROR: no JDK on PATH / JAVA_HOME unset"; exit 1; }
@@ -100,8 +116,8 @@ cat > "$ROOT/.env.local" <<EOF
 # Written by scripts/localnet.sh — points the app at the live LocalNet ledger.
 NEXT_PUBLIC_LEDGER_MODE=json-api
 LEDGER_URL=http://localhost:$JSON_PORT
-# Template ids use the package-name reference ('#canton-resilience:Main:Policy').
-LEDGER_PACKAGE_NAME=canton-resilience
+# Template ids use the package-name reference ('#resilix:Main:Policy').
+LEDGER_PACKAGE_NAME=resilix
 # JSON Ledger API v2 requires an explicit user-id; a sandbox without
 # authorization cannot default it from a token.
 LEDGER_USER_ID=ledger-api-user

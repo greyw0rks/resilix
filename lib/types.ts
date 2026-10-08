@@ -1,4 +1,4 @@
-// Core domain model for Canton Resilience.
+// Core domain model for Resilix.
 // The decentralization layer is application-agnostic: every protected
 // application is described by the same shape — parties, an approval
 // threshold, a set of hosting operators, and a single privileged action.

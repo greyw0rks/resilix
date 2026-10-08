@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Canton Resilience — automated end-to-end proof of the on-ledger control
+// Resilix — automated end-to-end proof of the on-ledger control
 // layer. Drives the SAME Daml JSON Ledger API v2 calls that
 // app/api/ledger/route.ts makes, against a live LocalNet sandbox, and asserts
 // the control-layer invariants hold ON THE LEDGER (not in the UI):
@@ -38,7 +38,7 @@ function loadEnv() {
 
 const env = loadEnv();
 const LEDGER_URL = env.LEDGER_URL;
-const PKG_NAME = env.LEDGER_PACKAGE_NAME ?? 'canton-resilience';
+const PKG_NAME = env.LEDGER_PACKAGE_NAME ?? 'resilix';
 const USER_ID = env.LEDGER_USER_ID ?? 'ledger-api-user';
 const PARTY_MAP = JSON.parse(env.LEDGER_PARTY_MAP ?? '{}');
 
@@ -161,7 +161,7 @@ const findReq = (readerSlug) => ofApp(readerSlug, 'ActionRequest');
 const findHosting = (readerSlug) => ofApp(readerSlug, 'HostingGroup');
 
 async function main() {
-  console.log(`\nCanton Resilience — on-ledger verification (${LEDGER_URL})\n`);
+  console.log(`\nResilix — on-ledger verification (${LEDGER_URL})\n`);
 
   // 0. Policy must exist (ledger initialized).
   const policy = await ofApp('alice', 'Policy');

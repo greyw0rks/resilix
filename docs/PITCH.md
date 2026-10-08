@@ -1,4 +1,4 @@
-# Pitch — Canton Resilience
+# Pitch — Resilix
 
 ## The question
 

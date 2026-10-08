@@ -25,7 +25,7 @@ export function Hero({ app, offlineNodes }: { app: DemoApplication; offlineNodes
           <span className="text-brand-400">one operator disappears?</span>
         </h1>
         <p className="mt-5 max-w-2xl text-[15px] leading-relaxed text-slate-400">
-          Canton Resilience is a reusable control layer for Canton applications. It defines who can
+          Resilix is a reusable control layer for Canton applications. It defines who can
           act, how many parties must approve, which operators host the Decentralized Party, and how
           every decision is audited.
         </p>

@@ -1,4 +1,4 @@
-# Build journal — Canton Resilience
+# Build journal — Resilix
 
 A record of what was built, in what order, and — more usefully — what was
 **wrong** along the way and what settled it. Dates are when the work landed.
@@ -109,7 +109,7 @@ checked the first time.
 
 **The port.** `/v2/commands/submit-and-wait`, `/v2/state/ledger-end`,
 `/v2/state/active-contracts`. Template ids moved to the package-*name* form
-(`#canton-resilience:Main:Policy`), so no package id is discovered or threaded
+(`#resilix:Main:Policy`), so no package id is discovered or threaded
 through the environment at all. Two new traps:
 
 - **`/livez` is not readiness.** The 3.x sandbox starts the participant and the

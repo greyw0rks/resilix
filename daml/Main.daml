@@ -3,7 +3,7 @@ module Main where
 import DA.List (unique)
 
 {-
-  Reference governance contracts for Canton Resilience.
+  Reference governance contracts for Resilix.
 
   These model the *control layer* only: a policy (who may act and how many
   must approve), a generic privileged action request, per-party approvals,

@@ -4,7 +4,7 @@ import Daml.Script
 import Main
 
 {-
-  LocalNet bootstrap for Canton Resilience.
+  LocalNet bootstrap for Resilix.
 
   Allocates the demo parties and creates one HostingGroup and one Policy per
   reference application (mirroring lib/applications.ts), then returns the
@@ -12,7 +12,7 @@ import Main
   bring-up script (scripts/localnet.sh) can write LEDGER_PARTY_MAP for the
   frontend. Run with:
 
-    daml script --dar .daml/dist/canton-resilience-0.1.0.dar \
+    daml script --dar .daml/dist/resilix-0.1.0.dar \
       --script-name Init:initialize --ledger-host localhost --ledger-port 6865 \
       --output-file init-output.json
 

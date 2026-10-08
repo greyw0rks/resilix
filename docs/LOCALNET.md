@@ -1,6 +1,6 @@
 # LocalNet
 
-Run the full Canton Resilience threshold workflow against a real Canton ledger
+Run the full Resilix threshold workflow against a real Canton ledger
 on your machine. This replaces the built-in in-memory ledger with live Daml
 contracts: approvals, operator status reports and executions change on-ledger
 contract state and survive a browser refresh.
@@ -50,7 +50,7 @@ npm run ledger:up
 
 This runs `scripts/localnet.sh`, which:
 
-1. `daml build` → `daml/.daml/dist/canton-resilience-0.1.0.dar`
+1. `daml build` → `daml/.daml/dist/resilix-0.1.0.dar`
 2. starts a Canton sandbox on `localhost:6865`, hosting the DAR and serving the
    **JSON Ledger API v2** on `localhost:7575`,
 3. waits for `/livez` **and then** for the participant to actually join its

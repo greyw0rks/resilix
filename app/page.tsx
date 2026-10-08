@@ -14,7 +14,7 @@ export default function Home() {
               <span className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 text-white">
                 <Shield size={17} />
               </span>
-              Canton<span className="text-brand-400">Resilience</span>
+              Resi<span className="text-brand-400">lix</span>
             </div>
             <p className="mt-3 max-w-sm text-xs text-slate-500">
               Reusable decentralized authorization and hosting for Canton applications.

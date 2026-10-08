@@ -18,7 +18,7 @@ import type { DemoApplication } from '@/lib/types';
 // LEDGER_PARTY_MAP, which scripts/localnet.sh writes after running daml/Init.daml.
 //
 // v2 differences from the old v1 bridge worth knowing:
-//  - template ids use the **package-name** reference (`#canton-resilience:Main:Policy`).
+//  - template ids use the **package-name** reference (`#resilix:Main:Policy`).
 //    The package-id format v1 required is deprecated as of Canton 3.4, so no
 //    package id needs to be discovered or threaded through the environment.
 //  - reads go through /v2/state/active-contracts and need an explicit ledger
@@ -32,7 +32,7 @@ export const dynamic = 'force-dynamic';
 const LEDGER_URL = process.env.LEDGER_URL; // e.g. http://localhost:7575
 // The package NAME from daml/daml.yaml, used for the `#name:Module:Template`
 // reference. Unlike the package id it is stable across rebuilds.
-const PKG_NAME = process.env.LEDGER_PACKAGE_NAME ?? 'canton-resilience';
+const PKG_NAME = process.env.LEDGER_PACKAGE_NAME ?? 'resilix';
 // v2 requires a user-id on every command submission; a sandbox without
 // authorization cannot default it from a token, so it is supplied explicitly.
 const USER_ID = process.env.LEDGER_USER_ID ?? 'ledger-api-user';
@@ -223,7 +223,11 @@ async function setNodeHosting(app: DemoApplication, nodeId: string, online: bool
   const node = app.hostingNodes.find((n) => n.id === nodeId);
   if (!node) throw new Error('Not a hosting operator for this application');
   const nodeParty = qualify(node.slug);
-  const group = await forApp(node.slug, 'HostingGroup', app.name);
+  // Read as the operator's own party — `forApp` takes a party id, not a slug,
+  // and filtersByParty keys on it directly. Passing the slug asked the ledger
+  // as a party that does not exist, so the group was never found and every
+  // node report failed with "No HostingGroup on the ledger".
+  const group = await forApp(nodeParty, 'HostingGroup', app.name);
   if (!group)
     throw new Error(`No HostingGroup on the ledger for "${app.name}" — run scripts/localnet.sh to initialize`);
   await submit(nodeParty, [

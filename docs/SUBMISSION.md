@@ -1,4 +1,4 @@
-# Canton Resilience — Submission
+# Resilix — Submission
 
 **One sentence.** A reusable *decentralized control layer* for Canton
 applications — policy, approval, resilience and audit — proven on a live ledger

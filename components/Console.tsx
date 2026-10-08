@@ -384,7 +384,7 @@ function Topbar({
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 text-white">
             <Shield size={17} />
           </span>
-          Canton<span className="text-brand-400">Resilience</span>
+          Resi<span className="text-brand-400">lix</span>
         </div>
         <nav className="hidden flex-1 items-center gap-6 md:flex">
           {NAV.map((n, i) => (

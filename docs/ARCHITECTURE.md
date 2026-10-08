@@ -4,7 +4,7 @@
 Grofty Wallet
      |  sign / transact
      v
-Canton Resilience (this project)
+Resilix (this project)
      |  +-- Policy Engine      : who may act, how many must approve
      |  +-- Approval Workflow  : per-party approvals, quorum
      |  +-- Hosting Registry   : operator parties, self-reported node status
@@ -75,7 +75,7 @@ rather than faked.
 
 ## Design rule
 
-Canton Resilience does not recreate the Decentralization Manager. It owns application policy and
+Resilix does not recreate the Decentralization Manager. It owns application policy and
 workflow. The Decentralization Manager owns the decentralized-party / operator infrastructure.
 
 ## Failure test

@@ -1,8 +1,8 @@
-# Canton Resilience
+# Resilix
 
 Decentralized control infrastructure for Canton applications.
 
-Canton Resilience is a **reusable control layer** for Canton apps. Instead of shipping one
+Resilix is a **reusable control layer** for Canton apps. Instead of shipping one
 treasury product, it lets any application define who can act, how many parties must approve,
 which operators host the Decentralized Party, what happens when an operator disappears, and how
 every decision is audited. The treasury is the reference implementation, not the product.
@@ -33,12 +33,12 @@ The same decentralization layer protects different actions. The demo switches be
 
 ```
 Grofty                → user interaction, wallet, signing
-Canton Resilience     → policy · approval · hosting · audit engines   (this project)
+Resilix               → policy · approval · hosting · audit engines   (this project)
 Decentralization Mgr  → Decentralized Party · operators               (BitSafe)
 Canton Network        → settlement · privacy
 ```
 
-Canton Resilience owns application policy and workflow. It models the *status* of the hosting
+Resilix owns application policy and workflow. It models the *status* of the hosting
 operator set on-ledger (who hosts an application, how many must be online, who is down) and
 enforces the availability gate in `Execute`. The Decentralized Party and the real distributed
 node topology are the Decentralization Manager's; this project does **not** reimplement them.
