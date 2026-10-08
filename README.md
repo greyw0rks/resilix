@@ -57,7 +57,8 @@ daml/           daml.yaml + reusable Policy / ActionRequest / AuditRecord contra
                 Init.daml (LocalNet bootstrap)
 app/api/ledger/ server route that bridges the browser to the Daml JSON Ledger API v2
 scripts/        localnet.sh — one-command LocalNet bring-up
-docs/           ARCHITECTURE.md, LOCALNET.md, SUBMISSION.md
+docs/           ARCHITECTURE.md, LOCALNET.md, SUBMISSION.md, PITCH.md,
+                JOURNAL.md (build log), VIDEO.md (demo script)
 ```
 
 The UI is built with **Tailwind CSS v4** (CSS-first config in `app/globals.css`, no
@@ -103,6 +104,14 @@ npm run build    # production build + typecheck
 
 A narrated, hands-free walkthrough of a single protected action moving through all four
 pillars is at **`/demo`** (runs on the in-memory model, so it always plays).
+
+A recorded screencast of the console driving the live ledger is produced by
+`npm run demo:video` (needs the ledger up and the app on `:3200`) — the shot list and
+the narrated alternative are in **[docs/VIDEO.md](docs/VIDEO.md)**.
+
+The reasoning behind the design, and the things that turned out to be wrong, are in
+**[docs/JOURNAL.md](docs/JOURNAL.md)**; the one-page argument is
+**[docs/PITCH.md](docs/PITCH.md)**.
 
 ## Demo flow (≈90s)
 

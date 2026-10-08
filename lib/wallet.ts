@@ -89,6 +89,42 @@ export function describeWalletError(e: unknown): string {
 
 const DISCONNECTED = (reason?: string): WalletState => ({ connected: false, real: true, reason });
 
+// CIP-0103 provider discovery is a request/announce pair on `window`: the dApp
+// asks, every installed wallet answers. The SDK does this internally to build
+// its adapter list, but never exposes the result — and it does not matter for
+// `connect()`, which opens a wallet picker and waits for a choice. On a browser
+// with no wallet, that choice never arrives and the button sits on
+// "Connecting…" indefinitely. Asking first is what makes the failure honest and
+// immediate.
+const ANNOUNCE_EVENT = 'canton:announceProvider';
+const REQUEST_EVENT = 'canton:requestProvider';
+
+function announcedWallets(timeoutMs = 500): Promise<{ id: string; name: string }[]> {
+  return new Promise((resolve) => {
+    const found = new Map<string, { id: string; name: string }>();
+    const onAnnounce = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (d?.id && d?.name && !found.has(d.id)) found.set(d.id, { id: d.id, name: d.name });
+    };
+    window.addEventListener(ANNOUNCE_EVENT, onAnnounce);
+    try {
+      window.dispatchEvent(new CustomEvent(REQUEST_EVENT, { detail: {} }));
+    } catch {
+      /* an old wallet that rejects the event shape is not a wallet we can use */
+    }
+    setTimeout(() => {
+      window.removeEventListener(ANNOUNCE_EVENT, onAnnounce);
+      resolve([...found.values()]);
+    }, timeoutMs);
+  });
+}
+
+// An Error carrying a CIP-0103 code, so `describeWalletError` translates it the
+// same way it translates the SDK's own discovery errors.
+function coded(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
 class GroftyWallet implements WalletAdapter {
   readonly id = 'grofty';
   readonly label = 'Grofty';
@@ -130,6 +166,12 @@ class GroftyWallet implements WalletAdapter {
   async connect(): Promise<WalletState> {
     try {
       const sdk = await this.sdk();
+      // Ask before opening anything: with no wallet to pick, the SDK's picker
+      // would wait for a choice that can never be made.
+      if ((await announcedWallets()).length === 0) {
+        this.account = null;
+        throw coded('WALLET_NOT_FOUND', WALLET_ERRORS.WALLET_NOT_FOUND);
+      }
       await sdk.init();
       const res = await sdk.connect();
       if (!res.isConnected) throw new Error(res.reason ?? res.networkReason ?? 'The wallet did not connect');

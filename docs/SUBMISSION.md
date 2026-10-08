@@ -121,3 +121,13 @@ npm run dev         # http://localhost:3000, header shows "json-api"
 
 Without `.env.local` the app runs the built-in in-memory ledger, which mirrors
 the exact Daml guards — useful for a zero-dependency demo.
+
+## The rest of the submission
+
+| Document | What it is |
+| --- | --- |
+| [`PITCH.md`](PITCH.md) | The one-page argument: the question, the answer, the three claims and their evidence |
+| [`JOURNAL.md`](JOURNAL.md) | The build log — decisions, the things that turned out to be wrong, and what settled them |
+| [`VIDEO.md`](VIDEO.md) | The demo video: shot list, narration, and `npm run demo:video` for the automated screencast |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Where each piece sits, and the code ↔ contract mapping |
+| [`LOCALNET.md`](LOCALNET.md) | Reproducible bring-up: toolchain, run, verify, troubleshooting |

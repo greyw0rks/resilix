@@ -9,7 +9,8 @@
     "lint": "next lint",
     "ledger:up": "bash scripts/localnet.sh",
     "ledger:stop": "bash scripts/localnet.sh stop",
-    "verify:ledger": "node scripts/verify-ledger.mjs"
+    "verify:ledger": "node scripts/verify-ledger.mjs",
+    "demo:video": "node scripts/demo-video.mjs"
   },
   "dependencies": {
     "@canton-network/dapp-sdk": "^1.7.1",

@@ -325,8 +325,13 @@ export function Console() {
             </div>
           </div>
           {executed ? (
+            // Named after the signer that actually acted. The demo stand-in
+            // produces no signature, so it must not borrow the wallet's name —
+            // an unsigned run saying "signed via Grofty" would be a lie the
+            // whole point of the banner is to avoid.
             <span className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm font-semibold text-emerald-300">
-              <CheckCircle2 size={16} /> Signed via Grofty
+              <CheckCircle2 size={16} />
+              {walletState.real ? `Signed via ${wallet.label}` : 'Executed · no signature (demo)'}
             </span>
           ) : (
             <button
