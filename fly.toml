@@ -1,0 +1,55 @@
+# Resilix — hosted dev ledger on Fly.io.
+#
+# Same container as the Railway attempt (Dockerfile + scripts/ledger-host.sh),
+# moved here because a Canton 3.x sandbox runs the participant, sequencer,
+# mediator and synchronizer in ONE JVM and grows to ~1GB+ during party
+# allocation — more than a 1GB container allows. The measured crash loop was an
+# OOM kill right at the ceiling; the fix is simply a machine with real headroom,
+# which is the [[vm]] block below.
+#
+# Deploy:  flyctl deploy       (after `flyctl auth login` and `flyctl apps create resilix-ledger`)
+
+app = "resilix-ledger"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "7575"
+  RESET_SECONDS = "1800"
+  # 2GB machine: leave the in-process synchronizer stack ~1GB of native room
+  # above a 1GB heap. ledger-host.sh reads these.
+  JVM_HEAP_PCT = "50"
+  JVM_CPUS = "2"
+
+[http_service]
+  internal_port = 7575
+  force_https = true
+  # The ledger is the demo's backend — keep exactly one machine always up rather
+  # than scaling to zero, so the first visitor is not met by a cold Canton boot.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # /livez proves the HTTP server is listening. The grace period must clear
+  # Canton's full cold boot: measured on this 2GB machine, the JSON Ledger API
+  # first answers /livez ~242s after the container starts (participant +
+  # sequencer + mediator + synchronizer all come up in one JVM), and Init runs
+  # after that. With the old 180s grace the release monitor decided the machine
+  # had failed to become healthy and bounced it at ~313s — mid-Init, every
+  # cycle — an infinite restart loop in which Canton never finished booting
+  # (Fly event log: requested_stop=true, oom_killed=false). 360s gives the
+  # sandbox comfortable room to answer before health is evaluated. Post-boot the
+  # grace no longer applies: the brief /livez outage during a 30-minute reset
+  # only drops the machine from the proxy pool, it does not restart it.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "4s"
+    grace_period = "360s"
+    method = "get"
+    path = "/livez"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

@@ -1,4 +1,4 @@
-// Core domain model for Canton Resilience.
+// Core domain model for Resilix.
 // The decentralization layer is application-agnostic: every protected
 // application is described by the same shape — parties, an approval
 // threshold, a set of hosting operators, and a single privileged action.
@@ -65,6 +65,9 @@ export interface AuditEvent {
   detail?: string;
   actor?: string;
   at: number; // sequence index; deterministic, not wall-clock
+  // The ledger's own timestamp for this event (ISO-8601), present only when the
+  // entry comes from a real ledger event rather than being derived in the UI.
+  ledgerTime?: string;
 }
 
 // A real, immutable AuditRecord contract read back from the ledger (the shape
@@ -78,4 +81,5 @@ export interface LedgerAuditRecord {
   executor: string; // slug of the party that executed
   onlineOperators?: number; // online operators at execution time
   hostingThreshold?: number; // hosting threshold at execution time
+  timestamp?: string; // ledger time the record was created (ISO-8601)
 }

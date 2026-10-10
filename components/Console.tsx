@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Shield, Wallet, ArrowRight, RotateCcw, CheckCircle2, Database } from 'lucide-react';
+import { Wallet, ArrowRight, RotateCcw, CheckCircle2, Database } from 'lucide-react';
+import { Logo, Wordmark } from './Logo';
 import { getApplication } from '@/lib/applications';
 import { buildAudit, canExecute, isAvailable, approvalsMet, type ConsoleState } from '@/lib/engine';
 import { getLedger } from '@/lib/ledger';
+import { describeWalletError, getDemoWallet, getWallet, type WalletAdapter, type WalletState } from '@/lib/wallet';
 import type { LedgerAuditRecord } from '@/lib/types';
 import { Hero } from './Hero';
 import { ApplicationSwitcher } from './ApplicationSwitcher';
@@ -35,9 +37,21 @@ export function Console() {
   const [executed, setExecuted] = useState(false);
   const [records, setRecords] = useState<LedgerAuditRecord[]>([]);
   const [offlineNodes, setOfflineNodes] = useState<string[]>([]);
-  const [walletConnected, setWalletConnected] = useState(false);
+  // The wallet is a real adapter over the Canton dApp SDK (lib/wallet.ts), not a
+  // local boolean: `walletState` is what the SDK reports about the wallet that
+  // is actually installed in this browser.
+  const [wallet, setWallet] = useState<WalletAdapter>(() => getWallet());
+  const [walletState, setWalletState] = useState<WalletState>({ connected: false, real: false });
+  // Offered only when the browser has no Canton wallet at all, so the demo can
+  // still run — the stand-in is labelled as such everywhere it appears.
+  const [offerDemoSigner, setOfferDemoSigner] = useState(false);
+  const walletConnected = walletState.connected;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The ledger's transaction id for the execution made in this session. It is
+  // not part of the AuditRecord (the durable artefact), so it is intentionally
+  // session-scoped: re-reading the ledger recovers the record, not this receipt.
+  const [txId, setTxId] = useState<string | undefined>(undefined);
 
   const app = getApplication(selectedId);
 
@@ -55,6 +69,7 @@ export function Console() {
     let active = true;
     setBusy(true);
     setError(null);
+    setTxId(undefined); // the receipt belongs to the app that was just executed
     ledger
       .openRequest(app)
       .then(() => refresh())
@@ -83,8 +98,79 @@ export function Console() {
     };
   }, [isLive, refresh]);
 
+  // Ask an installed wallet whether it already has an approved session. This is
+  // silent by design — it never opens the wallet UI — so a returning user is
+  // connected on load and a browser with no wallet simply stays disconnected.
+  useEffect(() => {
+    let active = true;
+    wallet
+      .restore()
+      .then((s) => {
+        if (active && s.connected) setWalletState(s);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [wallet]);
+
+  const toggleWallet = async () => {
+    setBusy(true);
+    setError(null);
+    setOfferDemoSigner(false);
+    try {
+      if (walletState.connected) {
+        await wallet.disconnect();
+        setWalletState({ connected: false, real: wallet.real });
+      } else {
+        setWalletState(await wallet.connect());
+      }
+    } catch (e) {
+      const message = describeWalletError(e);
+      setWalletState({ connected: false, real: wallet.real, reason: message });
+      setError(message);
+      // Only a wallet that isn't there justifies the stand-in. A rejected or
+      // expired session is a real wallet problem, and the user should see it
+      // rather than have the console quietly sign for them.
+      if (wallet.real && /no canton wallet|not installed|was announced/i.test(message)) setOfferDemoSigner(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useDemoSigner = async () => {
+    setBusy(true);
+    setError(null);
+    setOfferDemoSigner(false);
+    try {
+      const demo = getDemoWallet();
+      setWallet(demo);
+      setWalletState(await demo.connect());
+    } catch (e) {
+      setError(describeWalletError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const state: ConsoleState = { approvals, offlineNodes, walletConnected, executed };
   const audit = useMemo(() => buildAudit(app, state, records), [app, approvals, offlineNodes, executed, records]);
+
+  // When the connected wallet holds the very party the command must be
+  // authorized by, the wallet signs and submits it. That is the whole point of
+  // the integration: no server ever signs for a party the user owns. Anywhere
+  // else — including LocalNet, where an installed wallet is on another network
+  // entirely — this returns null and the command goes through the server route
+  // exactly as before.
+  const submitViaWallet = async (
+    action: 'approve' | 'execute',
+    slug: string,
+  ): Promise<{ updateId?: string } | null> => {
+    if (!walletState.connected || !walletState.real || !wallet.submit) return null;
+    const prepared = await ledger.prepare(app, action, slug);
+    if (!prepared || prepared.actAs[0] !== walletState.account?.partyId) return null;
+    return wallet.submit({ commands: prepared.commands, actAs: prepared.actAs });
+  };
 
   const toggleApproval = async (id: string) => {
     if (executed || busy) return;
@@ -95,7 +181,7 @@ export function Console() {
     setError(null);
     try {
       if (approvals.includes(id)) await ledger.revoke(app, id);
-      else await ledger.approve(app, id);
+      else if (!(await submitViaWallet('approve', id))) await ledger.approve(app, id);
       await refresh();
     } catch (e) {
       setError(errorMessage(e));
@@ -124,7 +210,9 @@ export function Console() {
     setBusy(true);
     setError(null);
     try {
-      await ledger.execute(app, app.parties[0].id);
+      const viaWallet = await submitViaWallet('execute', app.parties[0].id);
+      const id = viaWallet ? viaWallet.updateId : await ledger.execute(app, app.parties[0].id);
+      setTxId(id);
       await refresh();
     } catch (e) {
       setError(errorMessage(e));
@@ -135,6 +223,7 @@ export function Console() {
   const reset = async () => {
     setBusy(true);
     setError(null);
+    setTxId(undefined);
     try {
       // On a real ledger there is no reset — just re-read current state.
       if (!isLive) await ledger.openRequest(app);
@@ -151,7 +240,9 @@ export function Console() {
   const available = isAvailable(app, state);
   const need = app.threshold - approvals.length;
   const blockReason = executed
-    ? 'Executed and recorded on the ledger'
+    ? txId
+      ? `Recorded on the ledger · tx ${txId.slice(0, 16)}…`
+      : 'Executed and recorded on the ledger'
     : !met
     ? `Needs ${need} more approval${need === 1 ? '' : 's'}`
     : !available
@@ -163,8 +254,11 @@ export function Console() {
   return (
     <>
       <Topbar
-        walletConnected={walletConnected}
-        onWallet={() => setWalletConnected((v) => !v)}
+        wallet={walletState}
+        walletBusy={busy}
+        offerDemoSigner={offerDemoSigner}
+        onWallet={toggleWallet}
+        onDemoSigner={useDemoSigner}
         ledgerKind={ledger.kind}
       />
       <div id="overview" className="scroll-mt-20">
@@ -232,8 +326,13 @@ export function Console() {
             </div>
           </div>
           {executed ? (
+            // Named after the signer that actually acted. The demo stand-in
+            // produces no signature, so it must not borrow the wallet's name —
+            // an unsigned run saying "signed via Grofty" would be a lie the
+            // whole point of the banner is to avoid.
             <span className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm font-semibold text-emerald-300">
-              <CheckCircle2 size={16} /> Signed via Grofty
+              <CheckCircle2 size={16} />
+              {walletState.real ? `Signed via ${wallet.label}` : 'Executed · no signature (demo)'}
             </span>
           ) : (
             <button
@@ -257,23 +356,34 @@ export function Console() {
   );
 }
 
+// The connected account is shown by its Canton party id, not a nickname: the
+// party id is what the ledger authorizes, so it is what the user should see.
+const shortParty = (partyId: string) => {
+  const [name, fingerprint] = partyId.split('::');
+  return fingerprint ? `${name}::${fingerprint.slice(0, 6)}…${fingerprint.slice(-4)}` : partyId;
+};
+
 function Topbar({
-  walletConnected,
+  wallet,
+  walletBusy,
+  offerDemoSigner,
   onWallet,
+  onDemoSigner,
   ledgerKind,
 }: {
-  walletConnected: boolean;
+  wallet: WalletState;
+  walletBusy: boolean;
+  offerDemoSigner: boolean;
   onWallet: () => void;
+  onDemoSigner: () => void;
   ledgerKind: string;
 }) {
   return (
     <header className="sticky top-0 z-20 border-b border-white/8 bg-[#070b12]/85 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-10 px-6">
-        <div className="flex items-center gap-2.5 text-[17px] font-semibold tracking-tight text-white">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 text-white">
-            <Shield size={17} />
-          </span>
-          Canton<span className="text-brand-400">Resilience</span>
+        <div className="flex items-center gap-2.5">
+          <Logo size={32} />
+          <Wordmark />
         </div>
         <nav className="hidden flex-1 items-center gap-6 md:flex">
           {NAV.map((n, i) => (
@@ -292,19 +402,50 @@ function Topbar({
         <span className="hidden items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-slate-500 lg:inline-flex">
           <Database size={12} /> {ledgerKind}
         </span>
+        {offerDemoSigner && !wallet.connected && (
+          <button
+            onClick={onDemoSigner}
+            className="hidden items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] font-medium text-amber-300 transition-colors hover:border-amber-400/50 sm:inline-flex"
+          >
+            Use the demo signer
+          </button>
+        )}
         <button
           onClick={onWallet}
+          disabled={walletBusy}
+          title={wallet.reason ?? undefined}
           className={cn(
-            'inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-[13px] font-semibold transition-colors',
-            walletConnected
+            'inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-[13px] font-semibold transition-colors disabled:opacity-60',
+            wallet.connected
               ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
               : 'border-white/10 bg-white/5 text-slate-200 hover:border-white/25',
           )}
         >
           <Wallet size={15} />
-          {walletConnected ? 'Grofty connected' : 'Connect Grofty'}
+          {wallet.connected && wallet.account ? (
+            <span className="flex items-center gap-2">
+              <span className="font-mono text-[11px] font-normal">{shortParty(wallet.account.partyId)}</span>
+              <span
+                className={cn(
+                  'rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider',
+                  wallet.real ? 'bg-emerald-500/20 text-emerald-200' : 'bg-amber-500/20 text-amber-200',
+                )}
+              >
+                {wallet.real ? 'wallet' : 'demo'}
+              </span>
+            </span>
+          ) : walletBusy ? (
+            'Connecting…'
+          ) : (
+            'Connect Grofty'
+          )}
         </button>
       </div>
+      {wallet.connected && !wallet.real && (
+        <div className="border-t border-amber-500/20 bg-amber-500/[0.07] px-6 py-1.5 text-center font-mono text-[10px] text-amber-300/90">
+          Demo signer — no Canton wallet is installed in this browser, so nothing here is cryptographically signed.
+        </div>
+      )}
     </header>
   );
 }

@@ -4,15 +4,15 @@ import Daml.Script
 import Main
 
 {-
-  LocalNet bootstrap for Canton Resilience.
+  LocalNet bootstrap for Resilix.
 
   Allocates the demo parties and creates one HostingGroup and one Policy per
   reference application (mirroring lib/applications.ts), then returns the
   allocated party ids — including the hosting-operator parties — so the
-  bring-up script (scripts/localnet.sh) can write NEXT_PUBLIC_PARTY_MAP for the
+  bring-up script (scripts/localnet.sh) can write LEDGER_PARTY_MAP for the
   frontend. Run with:
 
-    daml script --dar .daml/dist/canton-resilience-0.1.0.dar \
+    daml script --dar .daml/dist/resilix-0.1.0.dar \
       --script-name Init:initialize --ledger-host localhost --ledger-port 6865 \
       --output-file init-output.json
 
@@ -33,20 +33,20 @@ data LedgerInit = LedgerInit
 
 initialize : Script LedgerInit
 initialize = do
-  operator <- allocatePartyWithHint "Operator" (PartyIdHint "Operator")
-  alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
-  bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
-  carol <- allocatePartyWithHint "Carol" (PartyIdHint "Carol")
-  dave <- allocatePartyWithHint "Dave" (PartyIdHint "Dave")
-  erin <- allocatePartyWithHint "Erin" (PartyIdHint "Erin")
+  operator <- allocatePartyByHint (PartyIdHint "Operator")
+  alice <- allocatePartyByHint (PartyIdHint "Alice")
+  bob <- allocatePartyByHint (PartyIdHint "Bob")
+  carol <- allocatePartyByHint (PartyIdHint "Carol")
+  dave <- allocatePartyByHint (PartyIdHint "Dave")
+  erin <- allocatePartyByHint (PartyIdHint "Erin")
 
   -- Hosting operators (mirrors lib/applications.ts hostingNodes). These are
   -- real parties: each one reports its own node state through HostingGroup.
-  opAlpha <- allocatePartyWithHint "OperatorAlpha" (PartyIdHint "OperatorAlpha")
-  opBeta <- allocatePartyWithHint "OperatorBeta" (PartyIdHint "OperatorBeta")
-  opGamma <- allocatePartyWithHint "OperatorGamma" (PartyIdHint "OperatorGamma")
-  opDelta <- allocatePartyWithHint "OperatorDelta" (PartyIdHint "OperatorDelta")
-  opEpsilon <- allocatePartyWithHint "OperatorEpsilon" (PartyIdHint "OperatorEpsilon")
+  opAlpha <- allocatePartyByHint (PartyIdHint "OperatorAlpha")
+  opBeta <- allocatePartyByHint (PartyIdHint "OperatorBeta")
+  opGamma <- allocatePartyByHint (PartyIdHint "OperatorGamma")
+  opDelta <- allocatePartyByHint (PartyIdHint "OperatorDelta")
+  opEpsilon <- allocatePartyByHint (PartyIdHint "OperatorEpsilon")
 
   let smallNodes = [opAlpha, opBeta, opGamma]                     -- Nodes A/B/C
   let largeNodes = [opAlpha, opBeta, opGamma, opDelta, opEpsilon] -- Nodes A–E

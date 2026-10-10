@@ -5,7 +5,7 @@ import { Card, Eyebrow, cn } from './ui';
 
 const LAYERS = [
   { title: 'Grofty', text: 'User interaction · wallet · signing', icon: Wallet },
-  { title: 'Canton Resilience', text: 'Policy · approval · audit engines', icon: Shield, primary: true },
+  { title: 'Resilix', text: 'Policy · approval · audit engines', icon: Shield, primary: true },
   { title: 'Decentralization Manager', text: 'Decentralized Party · operators', icon: Server },
   { title: 'Canton Network', text: 'Settlement · privacy', icon: Activity },
 ];
@@ -19,7 +19,7 @@ export function Architecture() {
         One control layer. Every privileged action.
       </h2>
       <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-slate-400">
-        Grofty is the interaction layer. Canton Resilience is the control layer. The
+        Grofty is the interaction layer. Resilix is the control layer. The
         Decentralization Manager owns the Decentralized Party and operator topology. Canton settles.
       </p>
 

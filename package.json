@@ -1,5 +1,5 @@
 {
-  "name": "canton-resilience",
+  "name": "resilix",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,9 +9,13 @@
     "lint": "next lint",
     "ledger:up": "bash scripts/localnet.sh",
     "ledger:stop": "bash scripts/localnet.sh stop",
-    "verify:ledger": "node scripts/verify-ledger.mjs"
+    "verify:ledger": "node scripts/verify-ledger.mjs",
+    "demo:video": "node scripts/demo-video.mjs"
   },
   "dependencies": {
+    "@canton-network/dapp-sdk": "^1.7.1",
+    "@walletconnect/sign-client": "^2.25.0",
+    "@walletconnect/types": "^2.25.0",
     "lucide-react": "latest",
     "next": "latest",
     "react": "latest",

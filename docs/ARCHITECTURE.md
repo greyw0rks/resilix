@@ -4,7 +4,7 @@
 Grofty Wallet
      |  sign / transact
      v
-Canton Resilience (this project)
+Resilix (this project)
      |  +-- Policy Engine      : who may act, how many must approve
      |  +-- Approval Workflow  : per-party approvals, quorum
      |  +-- Hosting Registry   : operator parties, self-reported node status
@@ -20,6 +20,24 @@ BitSafe Decentralization Manager
      v
 Canton Network (settlement · privacy)
 ```
+
+## Where the wallet sits
+
+The browser side of the top arrow is `lib/wallet.ts`, an adapter over the **Canton dApp SDK**
+(`@canton-network/dapp-sdk`, CIP-0103) — the interface a Canton wallet like Grofty implements:
+
+```
+connect()              →  discovers the wallet, restores an approved session, connects
+listAccounts()         →  the Canton party the wallet actually holds
+prepare (server route) →  the command the route would have submitted, returned unsubmitted
+prepareExecuteAndWait  →  the wallet signs and submits that command itself
+```
+
+The console takes the wallet path only when the party the command must be authorized by is the
+one the wallet holds, so the approval and the execution carry the user's own authority instead of
+the server's claim to it. A wallet signs against the network its own validator is on, which a
+LocalNet sandbox is not — there the check is false and the server route submits, and a browser
+with no Canton wallet at all can opt into an explicitly-labelled demo signer.
 
 ## Reusable, not treasury-specific
 
@@ -57,7 +75,7 @@ rather than faked.
 
 ## Design rule
 
-Canton Resilience does not recreate the Decentralization Manager. It owns application policy and
+Resilix does not recreate the Decentralization Manager. It owns application policy and
 workflow. The Decentralization Manager owns the decentralized-party / operator infrastructure.
 
 ## Failure test

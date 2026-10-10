@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono' });
 
 export const metadata: Metadata = {
-  title: 'Canton Resilience — decentralized control for Canton',
+  title: 'Resilix — decentralized control for Canton',
   description:
     'A reusable decentralized authorization and hosting layer for Canton applications. Policy, governance, resilience and audit.',
 };

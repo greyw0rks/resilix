@@ -5,7 +5,7 @@ import Main
 import DA.Assert ((===))
 
 {-
-  Acceptance tests for the Canton Resilience control layer.
+  Acceptance tests for the Resilix control layer.
 
   These prove the threshold / authorization / availability invariants are
   enforced *on the ledger* by the Daml choices, not in the UI. Each `Script` is

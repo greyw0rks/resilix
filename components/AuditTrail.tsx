@@ -22,6 +22,15 @@ const TONE: Record<AuditKind, string> = {
 
 // Auditability: every request, approval, hosting change and execution is
 // captured as an ordered, traceable record.
+//
+// A ledger timestamp arrives as ISO-8601 and is formatted by slicing rather
+// than through `Date`, so the rendering is identical on the server and the
+// client (no locale or timezone to disagree about).
+const stamped = (iso: string): string => {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return m ? `${m[1]} ${m[2]}Z` : iso;
+};
+
 export function AuditTrail({ events, note }: { events: AuditEvent[]; note?: string }) {
   return (
     <Card className="p-5">
@@ -54,9 +63,22 @@ export function AuditTrail({ events, note }: { events: AuditEvent[]; note?: stri
                 <b className="block text-[13px] text-slate-100">{e.label}</b>
                 {e.detail && <small className="block font-mono text-[11px] text-slate-500">{e.detail}</small>}
               </span>
-              {e.actor && (
-                <span className="rounded-full bg-white/5 px-2.5 py-1 font-mono text-[10px] font-medium text-slate-400">
-                  {e.actor}
+              {(e.actor || e.ledgerTime) && (
+                <span className="flex flex-none flex-col items-end gap-1">
+                  {e.ledgerTime && (
+                    <time
+                      dateTime={e.ledgerTime}
+                      className="font-mono text-[10px] text-slate-500"
+                      title="Ledger timestamp"
+                    >
+                      {stamped(e.ledgerTime)}
+                    </time>
+                  )}
+                  {e.actor && (
+                    <span className="rounded-full bg-white/5 px-2.5 py-1 font-mono text-[10px] font-medium text-slate-400">
+                      {e.actor}
+                    </span>
+                  )}
                 </span>
               )}
             </li>

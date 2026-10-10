@@ -1,13 +1,13 @@
 import type { DemoApplication, LedgerAuditRecord } from './types';
 
-// Ledger abstraction for the Canton Resilience control layer.
+// Ledger abstraction for the Resilix control layer.
 //
 // The UI never talks to a participant directly — it goes through this
 // interface. `InMemoryLedger` reproduces the exact guards of the Daml
 // choices in daml/Main.daml so the demo runs with no external dependency,
 // and `HttpLedger` is a drop-in that proxies the same operations through the
 // same-origin Next.js route (app/api/ledger/route.ts), which submits them to
-// a real Canton participant over the Daml HTTP JSON API v1.
+// a real Canton participant over the Daml JSON Ledger API v2 (Canton 3.x).
 //
 // Approvals are append-only, matching the ledger: `ActionRequest.Approve`
 // creates a new contract state, it never "un-approves". `revoke` exists only
@@ -16,6 +16,13 @@ import type { DemoApplication, LedgerAuditRecord } from './types';
 export interface RequestView {
   approvals: string[]; // party ids that have approved
   executed: boolean;
+}
+
+// A ledger command the console would otherwise have the server submit, plus the
+// party it must be authorized by. A connected Canton wallet submits this itself.
+export interface PreparedCommand {
+  commands: unknown[];
+  actAs: string[];
 }
 
 // Distributed-hosting state, read from the application's HostingGroup contract
@@ -32,7 +39,16 @@ export interface ResilienceLedger {
   openRequest(app: DemoApplication): Promise<void>;
   approve(app: DemoApplication, partyId: string): Promise<void>;
   revoke(app: DemoApplication, partyId: string): Promise<void>;
-  execute(app: DemoApplication, executor: string): Promise<void>;
+  // Returns the ledger's transaction (update) id when the execution committed
+  // to a real ledger; undefined for the in-memory demo.
+  execute(app: DemoApplication, executor: string): Promise<string | undefined>;
+  // The command that would perform the action, for a real wallet to submit
+  // itself (undefined when there is no real ledger behind this adapter).
+  prepare(
+    app: DemoApplication,
+    action: 'approve' | 'execute',
+    partyId: string,
+  ): Promise<PreparedCommand | undefined>;
   view(app: DemoApplication): Promise<RequestView>;
   // The immutable AuditRecord contracts for this application, oldest first.
   audit(app: DemoApplication): Promise<LedgerAuditRecord[]>;
@@ -101,6 +117,14 @@ class InMemoryLedger implements ResilienceLedger {
       hostingThreshold: app.hostingThreshold,
     });
     this.records.set(app.id, list);
+    // The demo ledger has no transaction id — nothing was submitted anywhere.
+    return undefined;
+  }
+
+  // Nothing to hand a wallet: this adapter never talks to a participant, so the
+  // caller keeps its existing path.
+  async prepare(): Promise<PreparedCommand | undefined> {
+    return undefined;
   }
 
   async view(app: DemoApplication): Promise<RequestView> {
@@ -131,11 +155,11 @@ class InMemoryLedger implements ResilienceLedger {
   }
 }
 
-// --- HTTP proxy implementation (Daml JSON API v1, via /api/ledger) ---------
+// --- HTTP proxy implementation (JSON Ledger API v2, via /api/ledger) -------
 // Active when NEXT_PUBLIC_LEDGER_MODE=json-api. The browser only ever talks to
-// the same-origin Next.js route app/api/ledger/route.ts, which owns the JWT
-// minting and Canton participant connection. Approvals are append-only here,
-// exactly as on the ledger — there is no `revoke`.
+// the same-origin Next.js route app/api/ledger/route.ts, which owns the
+// connection to the Canton participant. Approvals are append-only here, exactly
+// as on the ledger — there is no `revoke`.
 
 class HttpLedger implements ResilienceLedger {
   readonly kind = 'json-api' as const;
@@ -168,8 +192,17 @@ class HttpLedger implements ResilienceLedger {
     throw new Error('Approvals are append-only on a real ledger');
   }
 
-  async execute(app: DemoApplication, executor: string) {
-    await this.call('execute', app, executor);
+  async execute(app: DemoApplication, executor: string): Promise<string | undefined> {
+    // The route returns the update id from submit-and-wait: the ledger's own
+    // transaction identifier for the execution.
+    const data = await this.call('execute', app, executor);
+    return typeof data.updateId === 'string' ? data.updateId : undefined;
+  }
+
+  async prepare(app: DemoApplication, action: 'approve' | 'execute', partyId: string) {
+    const data = await this.call('prepare', app, partyId, { action });
+    if (!Array.isArray(data.commands) || !Array.isArray(data.actAs)) return undefined;
+    return { commands: data.commands as unknown[], actAs: data.actAs as string[] };
   }
 
   async view(app: DemoApplication): Promise<RequestView> {

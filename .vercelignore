@@ -1,0 +1,22 @@
+# Vercel upload exclusions.
+#
+# The CLI uploads the working tree, not just committed files, so anything
+# gitignored has to be excluded here too — most importantly `.env*`, which is
+# where scripts/localnet.sh writes the LocalNet ledger URL and party map. Those
+# are localhost values and must never reach a deployment.
+
+.env*
+node_modules
+.next
+out
+tsconfig.tsbuildinfo
+
+# Daml build output and LocalNet runtime files
+daml/.daml
+daml/log
+.localnet-init.json
+.localnet-pids
+.localnet-sandbox.log
+
+# Generated brag/marketing media (large, not part of the site)
+brag-output

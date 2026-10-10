@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Resilix mark.
+
+  The product's claim is that authority is shared and hosting is redundant: three
+  operators, two required, and losing one is not an incident. So the shield is
+  held by three nodes rather than by an outline — two filled (reporting online),
+  one left open at the apex, which is the node the structure can afford to lose.
+  The outline still closes: that is the point.
+
+  Drawn flat rather than as a gradient, and with a heavy stroke, so it survives
+  16px. Keep in step with components/Logo.tsx.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" role="img" aria-label="Resilix">
+  <title>Resilix</title>
+  <rect width="48" height="48" rx="11" fill="#2f6fe0"/>
+
+  <!-- The shield, drawn as two halves that stop at the open apex node. -->
+  <g fill="none" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 13.5 H34 V22.5 C34 28.6 30.5 32.6 26.9 34.4"/>
+    <path d="M14 13.5 V22.5 C14 28.6 17.5 32.6 21.1 34.4"/>
+  </g>
+
+  <!-- Two operators reporting online. -->
+  <circle cx="14" cy="13.5" r="2.9" fill="#ffffff"/>
+  <circle cx="34" cy="13.5" r="2.9" fill="#ffffff"/>
+
+  <!-- The node the structure can afford to lose. -->
+  <circle cx="24" cy="35" r="3" fill="none" stroke="#ffffff" stroke-width="2.6"/>
+</svg>

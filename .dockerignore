@@ -1,0 +1,15 @@
+.git
+.gitignore
+.vercel
+.vercelignore
+node_modules
+.next
+out
+brag-output
+*.log
+.env*
+.localnet-*
+tsconfig.tsbuildinfo
+# The DAR is compiled inside the image, so a local build output is not uploaded.
+daml/.daml
+daml/log

@@ -23,12 +23,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.daml
-          key: daml-sdk-2.10.6
+          key: daml-sdk-3.5.0-snapshot.20260403.0
 
-      - name: Install Daml SDK 2.10.6
+      - name: Install Daml SDK 3.5.0-snapshot.20260403.0
         run: |
           if [ ! -x "$HOME/.daml/bin/daml" ]; then
-            curl -sSL https://get.daml.com | sh -s 2.10.6
+            curl -sSL https://get.daml.com | sh -s 3.5.0-snapshot.20260403.0
           fi
           echo "$HOME/.daml/bin" >> "$GITHUB_PATH"
 
@@ -60,3 +60,50 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  ledger:
+    name: LocalNet (bring-up + on-ledger invariants)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Cache Daml SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.daml
+          key: daml-sdk-3.5.0-snapshot.20260403.0
+
+      - name: Install Daml SDK 3.5.0-snapshot.20260403.0
+        run: |
+          if [ ! -x "$HOME/.daml/bin/daml" ]; then
+            curl -sSL https://get.daml.com | sh -s 3.5.0-snapshot.20260403.0
+          fi
+          echo "$HOME/.daml/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Proves the reproducible setup path end to end: one command brings up a
+      # real Canton sandbox and initializes it, the next asserts the control
+      # layer's invariants on that ledger.
+      - name: Bring up LocalNet
+        run: npm run ledger:up
+
+      - name: Verify the on-ledger invariants
+        run: npm run verify:ledger
+
+      - name: Sandbox log
+        if: failure()
+        run: tail -50 .localnet-sandbox.log

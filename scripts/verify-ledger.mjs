@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Canton Resilience — automated end-to-end proof of the on-ledger control
-// layer. Drives the SAME Daml HTTP JSON API v1 calls that
+// Resilix — automated end-to-end proof of the on-ledger control
+// layer. Drives the SAME Daml JSON Ledger API v2 calls that
 // app/api/ledger/route.ts makes, against a live LocalNet sandbox, and asserts
 // the control-layer invariants hold ON THE LEDGER (not in the UI):
 //
@@ -12,8 +12,8 @@
 //   • RESILIENCE: an application below its hosting threshold cannot execute,
 //     and becomes executable again once an operator reports back online
 //
-// Prereq: `npm run ledger:up` has written .env.local and the sandbox + JSON API
-// are running. Run with: `npm run verify:ledger`.
+// Prereq: `npm run ledger:up` has written .env.local and the sandbox serving
+// the JSON Ledger API v2 is running. Run with: `npm run verify:ledger`.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -38,16 +38,17 @@ function loadEnv() {
 
 const env = loadEnv();
 const LEDGER_URL = env.LEDGER_URL;
-const LEDGER_ID = env.LEDGER_ID ?? 'sandbox';
-const PKG = env.LEDGER_PACKAGE_ID;
+const PKG_NAME = env.LEDGER_PACKAGE_NAME ?? 'resilix';
+const USER_ID = env.LEDGER_USER_ID ?? 'ledger-api-user';
 const PARTY_MAP = JSON.parse(env.LEDGER_PARTY_MAP ?? '{}');
 
-if (!LEDGER_URL || !PKG || Object.keys(PARTY_MAP).length === 0) {
-  fail('.env.local is missing LEDGER_URL / LEDGER_PACKAGE_ID / LEDGER_PARTY_MAP — re-run `npm run ledger:up`.');
+if (!LEDGER_URL || Object.keys(PARTY_MAP).length === 0) {
+  fail('.env.local is missing LEDGER_URL / LEDGER_PARTY_MAP — re-run `npm run ledger:up`.');
 }
 
-const tid = (t) => `${PKG}:Main:${t}`;
-const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+// Template ids use the package-name reference (the package-id format v1 needed
+// is deprecated as of Canton 3.4).
+const tid = (t) => `#${PKG_NAME}:Main:${t}`;
 const qualify = (slug) => {
   const p = PARTY_MAP[slug];
   if (!p) fail(`No allocated party for "${slug}"`);
@@ -56,30 +57,17 @@ const qualify = (slug) => {
 const deQualify = (party) =>
   Object.entries(PARTY_MAP).find(([, p]) => p === party)?.[0] ?? party;
 
-function mintToken(party) {
-  const header = { alg: 'none', typ: 'JWT' };
-  const payload = {
-    'https://daml.com/ledger-api': {
-      ledgerId: LEDGER_ID,
-      applicationId: 'canton-resilience',
-      actAs: [party],
-      readAs: [party],
-    },
-  };
-  return `${b64url(header)}.${b64url(payload)}.`;
-}
-
-async function api(party, path, body) {
+async function post(path, body) {
   const res = await fetch(`${LEDGER_URL}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${mintToken(party)}` },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   const text = await res.text();
   let parsed;
   try { parsed = JSON.parse(text); } catch { parsed = undefined; }
-  if (!res.ok || parsed?.status >= 400) {
-    const msg = Array.isArray(parsed?.errors) ? parsed.errors.join('; ') : `HTTP ${res.status}`;
+  if (!res.ok || parsed?.code) {
+    const msg = parsed?.cause ?? parsed?.message ?? `HTTP ${res.status}`;
     const err = new Error(msg);
     err.ledger = true;
     throw err;
@@ -87,10 +75,57 @@ async function api(party, path, body) {
   return parsed;
 }
 
-const query = async (readerSlug, template, q) =>
-  (await api(qualify(readerSlug), '/v1/query', { templateIds: [template], query: q }))?.result ?? [];
-const exercise = (actorSlug, templateId, contractId, choice, argument) =>
-  api(qualify(actorSlug), '/v1/exercise', { templateId, contractId, choice, argument });
+// The ledger end offset — the reading point for an active-contracts snapshot.
+async function ledgerEnd() {
+  const res = await fetch(`${LEDGER_URL}/v2/state/ledger-end`);
+  return Number((await res.json()).offset);
+}
+
+// Active contracts of one template as seen by `reader`. The JSON Ledger API has
+// no server-side field filter (v1's partial-match `query` is gone), so callers
+// narrow by payload field. Int64 fields arrive as JSON strings.
+async function query(readerSlug, template) {
+  const activeAtOffset = await ledgerEnd();
+  const rows = await post('/v2/state/active-contracts', {
+    activeAtOffset,
+    eventFormat: {
+      filtersByParty: {
+        [qualify(readerSlug)]: {
+          cumulative: [
+            { identifierFilter: { TemplateFilter: { value: { templateId: tid(template) } } } },
+          ],
+        },
+      },
+      verbose: false,
+    },
+    verbose: false,
+  });
+  const out = [];
+  for (const r of rows ?? []) {
+    const c = r?.contractEntry?.JsActiveContract?.createdEvent;
+    if (c) out.push({ contractId: c.contractId, payload: c.createArgument, createdAt: c.createdAt });
+  }
+  return out;
+}
+
+const exCmd = (template, contractId, choice, choiceArgument) => ({
+  ExerciseCommand: { templateId: tid(template), contractId, choice, choiceArgument },
+});
+
+// Submit a command as `party` and wait for it to commit; returns the update id.
+async function submit(actorSlug, commands) {
+  const actor = qualify(actorSlug);
+  return post('/v2/commands/submit-and-wait', {
+    commands,
+    commandId: crypto.randomUUID(),
+    actAs: [actor],
+    readAs: [actor],
+    userId: USER_ID,
+  });
+}
+
+const exercise = (actorSlug, template, contractId, choice, choiceArgument) =>
+  submit(actorSlug, [exCmd(template, contractId, choice, choiceArgument)]);
 
 // --- tiny assertion harness ------------------------------------------------
 let passed = 0;
@@ -120,23 +155,23 @@ const MEMBERS = ['alice', 'bob', 'carol']; // threshold 2
 const NON_MEMBER = 'dave'; // allocated, but not a Treasury policy member
 const NODES = ['opalpha', 'opbeta', 'opgamma']; // hosting operators, threshold 2
 
-const findReq = async (readerSlug) =>
-  (await query(readerSlug, tid('ActionRequest'), { application: APP.application }))[0];
-const findHosting = async (readerSlug) =>
-  (await query(readerSlug, tid('HostingGroup'), { application: APP.application }))[0];
+const ofApp = async (readerSlug, template) =>
+  (await query(readerSlug, template)).find((r) => r.payload?.application === APP.application);
+const findReq = (readerSlug) => ofApp(readerSlug, 'ActionRequest');
+const findHosting = (readerSlug) => ofApp(readerSlug, 'HostingGroup');
 
 async function main() {
-  console.log(`\nCanton Resilience — on-ledger verification (${LEDGER_URL})\n`);
+  console.log(`\nResilix — on-ledger verification (${LEDGER_URL})\n`);
 
   // 0. Policy must exist (ledger initialized).
-  const policies = await query('alice', tid('Policy'), { application: APP.application });
-  if (!policies[0]) fail(`No Policy for "${APP.application}" — run \`npm run ledger:up\`.`);
-  ok(`Policy for "${APP.application}" is on the ledger (threshold ${policies[0].payload.threshold})`);
+  const policy = await ofApp('alice', 'Policy');
+  if (!policy) fail(`No Policy for "${APP.application}" — run \`npm run ledger:up\`.`);
+  ok(`Policy for "${APP.application}" is on the ledger (threshold ${policy.payload.threshold})`);
 
   // 1. Clean slate: withdraw any request left open by a previous run.
   const stale = await findReq('alice');
   if (stale) {
-    await exercise('alice', tid('ActionRequest'), stale.contractId, 'Reject', { canceller: qualify('alice') });
+    await exercise('alice', 'ActionRequest', stale.contractId, 'Reject', { canceller: qualify('alice') });
     ok('withdrew a stale open request (Reject)');
   }
 
@@ -148,12 +183,12 @@ async function main() {
   for (const party of hg.payload.offline ?? []) {
     const slug = deQualify(party);
     const cur = await findHosting('alice');
-    await exercise(slug, tid('HostingGroup'), cur.contractId, 'ReportOnline', { node: party });
+    await exercise(slug, 'HostingGroup', cur.contractId, 'ReportOnline', { node: party });
     ok(`brought a stale offline operator back online (${slug})`);
   }
   hg = await findHosting('alice');
 
-  // The JSON API v1 encodes Int64 as a JSON string, so numeric fields are
+  // The JSON Ledger API encodes Int64 as a JSON string, so numeric fields are
   // normalised with Number() before comparing.
   const nodeCount = (hg.payload.nodes ?? []).length;
   const hostingThreshold = Number(hg.payload.threshold);
@@ -163,7 +198,7 @@ async function main() {
   ok(`HostingGroup is on the ledger (${nodeCount} operators, threshold ${hostingThreshold}, all online)`);
 
   // 2. Open a fresh request as the requester (alice).
-  await exercise('alice', tid('Policy'), policies[0].contractId, 'RequestAction', {
+  await exercise('alice', 'Policy', policy.contractId, 'RequestAction', {
     requester: qualify('alice'),
     verb: APP.verb, target: APP.target, detail: APP.detail, reference: APP.reference,
   });
@@ -173,37 +208,37 @@ async function main() {
 
   // 3. NEGATIVE: cannot execute under threshold (0 approvals).
   await expectReject('execute with 0/2 approvals',
-    () => exercise('alice', tid('ActionRequest'), req0.contractId, 'Execute',
+    () => exercise('alice', 'ActionRequest', req0.contractId, 'Execute',
       { executor: qualify('alice'), hostingGroup: hg.contractId }),
     /threshold not met/i);
 
   // 4. NEGATIVE: a non-member cannot approve. On the ledger the ActionRequest's
   //    observers ARE the policy members (daml/Main.daml), so a true non-member
   //    cannot even see the contract — the ledger blocks them by invisibility
-  //    (CONTRACT_NOT_FOUND) before the explicit member-check assertion is
-  //    reachable. Either way the approval is impossible for a non-member.
+  //    before the explicit member-check assertion is reachable. Either way the
+  //    approval is impossible for a non-member.
   await expectReject(`approve as non-member (${NON_MEMBER})`,
-    () => exercise(NON_MEMBER, tid('ActionRequest'), req0.contractId, 'Approve', { approver: qualify(NON_MEMBER) }),
-    /not a policy member|not be found|not found/i);
+    () => exercise(NON_MEMBER, 'ActionRequest', req0.contractId, 'Approve', { approver: qualify(NON_MEMBER) }),
+    /not a policy member|not be found|not found|no open request/i);
 
   // 5. First approval (alice).
-  await exercise('alice', tid('ActionRequest'), req0.contractId, 'Approve', { approver: qualify('alice') });
+  await exercise('alice', 'ActionRequest', req0.contractId, 'Approve', { approver: qualify('alice') });
   ok('approved by alice (1/2)');
   const req1 = await findReq('alice');
 
   // 6. NEGATIVE: the same party cannot approve twice.
   await expectReject('approve twice as alice',
-    () => exercise('alice', tid('ActionRequest'), req1.contractId, 'Approve', { approver: qualify('alice') }),
+    () => exercise('alice', 'ActionRequest', req1.contractId, 'Approve', { approver: qualify('alice') }),
     /already approved/i);
 
   // 7. NEGATIVE: still under threshold (1/2).
   await expectReject('execute with 1/2 approvals',
-    () => exercise('alice', tid('ActionRequest'), req1.contractId, 'Execute',
+    () => exercise('alice', 'ActionRequest', req1.contractId, 'Execute',
       { executor: qualify('alice'), hostingGroup: hg.contractId }),
     /threshold not met/i);
 
   // 8. Second approval (bob) → quorum met.
-  await exercise('bob', tid('ActionRequest'), req1.contractId, 'Approve', { approver: qualify('bob') });
+  await exercise('bob', 'ActionRequest', req1.contractId, 'Approve', { approver: qualify('bob') });
   ok('approved by bob (2/2 — quorum met)');
   const req2 = await findReq('alice');
 
@@ -216,10 +251,10 @@ async function main() {
     const g = (await findHosting('alice')).payload;
     return { online: nodeCount - (g.offline ?? []).length, threshold: Number(g.threshold) };
   };
-  // A node reports its own status. The submitter IS the node, so the header of
-  // this transaction names that operator — no admin acts on its behalf.
+  // A node reports its own status. The submitter IS the node, so the command is
+  // submitted actAs that operator — no admin acts on its behalf.
   const report = async (slug, choice) =>
-    exercise(slug, tid('HostingGroup'), await liveGroup(), choice, { node: qualify(slug) });
+    exercise(slug, 'HostingGroup', await liveGroup(), choice, { node: qualify(slug) });
 
   // 9a. Operator Alpha reports its own node down; the ledger accepts it.
   await report('opalpha', 'ReportOffline');
@@ -228,13 +263,13 @@ async function main() {
   // 9b. NEGATIVE: an operator cannot report another operator's node — the
   //     choice is controlled by the node itself.
   await expectReject('report a peer node offline as another operator',
-    async () => exercise('opalpha', tid('HostingGroup'), await liveGroup(), 'ReportOffline',
+    async () => exercise('opalpha', 'HostingGroup', await liveGroup(), 'ReportOffline',
       { node: qualify('opbeta') }),
-    /requires authorizers|not a hosting operator|not be found|not found/i);
+    /requires authorizers|not a hosting operator|not be found|not found|failed to authorize/i);
 
   // 9c. NEGATIVE: the same node cannot report offline twice.
   await expectReject('report the same node offline twice',
-    async () => exercise('opalpha', tid('HostingGroup'), await liveGroup(), 'ReportOffline',
+    async () => exercise('opalpha', 'HostingGroup', await liveGroup(), 'ReportOffline',
       { node: qualify('opalpha') }),
     /already offline/i);
 
@@ -247,7 +282,7 @@ async function main() {
   // 9e. THE invariant: the approval quorum is met, but the application is
   //     under-hosted, so execution is refused by the ledger.
   await expectReject('execute while hosting is below threshold',
-    async () => exercise('alice', tid('ActionRequest'), req2.contractId, 'Execute',
+    async () => exercise('alice', 'ActionRequest', req2.contractId, 'Execute',
       { executor: qualify('alice'), hostingGroup: await liveGroup() }),
     /hosting below threshold/i);
 
@@ -257,16 +292,19 @@ async function main() {
   if (h.online !== 2) fail(`expected 2/${nodeCount} operators online after recovery, ledger reports ${h.online}`);
   ok(`operator Beta back online — ${h.online}/${nodeCount} online (threshold ${h.threshold})`);
 
-  // 10. Execute → emits an immutable AuditRecord.
-  await exercise('alice', tid('ActionRequest'), req2.contractId, 'Execute',
+  // 10. Execute → emits an immutable AuditRecord, and returns the ledger's
+  //     transaction id (the update id) for the execution.
+  const executed = await exercise('alice', 'ActionRequest', req2.contractId, 'Execute',
     { executor: qualify('alice'), hostingGroup: await liveGroup() });
-  ok('executed by alice');
+  if (!executed?.updateId) fail('Execute did not return an update id');
+  ok(`executed by alice (tx ${executed.updateId.slice(0, 16)}…)`);
 
   // 11. The AuditRecord is on the ledger with the right content, including the
-  //     hosting quorum captured at execution time.
-  const audits = await query('alice', tid('AuditRecord'), { application: APP.application });
-  const latest = audits.map((a) => a.payload).find((p) => p.reference === APP.reference);
-  if (!latest) fail('no AuditRecord with the expected reference was found on the ledger');
+  //     hosting quorum and the ledger timestamp captured at execution time.
+  const audits = await query('alice', 'AuditRecord');
+  const latestRow = audits.find((r) => r.payload?.reference === APP.reference);
+  if (!latestRow) fail('no AuditRecord with the expected reference was found on the ledger');
+  const latest = latestRow.payload;
   const approvers = (latest.approvals ?? []).map(deQualify).sort();
   if (latest.verb !== APP.verb) fail(`AuditRecord.verb was "${latest.verb}", expected "${APP.verb}"`);
   if (deQualify(latest.executor) !== 'alice') fail(`AuditRecord.executor was "${deQualify(latest.executor)}", expected "alice"`);
@@ -274,7 +312,8 @@ async function main() {
     fail(`AuditRecord.approvals were [${approvers}], expected to contain alice+bob`);
   if (Number(latest.onlineOperators) !== 2) fail(`AuditRecord.onlineOperators was ${latest.onlineOperators}, expected 2`);
   if (Number(latest.hostingThreshold) !== 2) fail(`AuditRecord.hostingThreshold was ${latest.hostingThreshold}, expected 2`);
-  ok(`AuditRecord: ${latest.verb} ${APP.reference}, executor=alice, quorum=${approvers.length}/${MEMBERS.length} [${approvers}], hosting=${latest.onlineOperators}/${nodeCount}`);
+  if (!latestRow.createdAt) fail('AuditRecord has no ledger timestamp (createdAt)');
+  ok(`AuditRecord: ${latest.verb} ${APP.reference}, executor=alice, quorum=${approvers.length}/${MEMBERS.length} [${approvers}], hosting=${latest.onlineOperators}/${nodeCount}, at ${latestRow.createdAt}`);
 
   // 12. Persistence: the request is consumed; executed state is re-readable.
   const after = await findReq('alice');
