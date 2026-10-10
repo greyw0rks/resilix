@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Shield, Wallet, ArrowRight, RotateCcw, CheckCircle2, Database } from 'lucide-react';
+import { Wallet, ArrowRight, RotateCcw, CheckCircle2, Database } from 'lucide-react';
+import { Logo, Wordmark } from './Logo';
 import { getApplication } from '@/lib/applications';
 import { buildAudit, canExecute, isAvailable, approvalsMet, type ConsoleState } from '@/lib/engine';
 import { getLedger } from '@/lib/ledger';
@@ -380,11 +381,9 @@ function Topbar({
   return (
     <header className="sticky top-0 z-20 border-b border-white/8 bg-[#070b12]/85 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-10 px-6">
-        <div className="flex items-center gap-2.5 text-[17px] font-semibold tracking-tight text-white">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 text-white">
-            <Shield size={17} />
-          </span>
-          Resi<span className="text-brand-400">lix</span>
+        <div className="flex items-center gap-2.5">
+          <Logo size={32} />
+          <Wordmark />
         </div>
         <nav className="hidden flex-1 items-center gap-6 md:flex">
           {NAV.map((n, i) => (
