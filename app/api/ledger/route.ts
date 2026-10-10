@@ -36,7 +36,74 @@ const PKG_NAME = process.env.LEDGER_PACKAGE_NAME ?? 'resilix';
 // v2 requires a user-id on every command submission; a sandbox without
 // authorization cannot default it from a token, so it is supplied explicitly.
 const USER_ID = process.env.LEDGER_USER_ID ?? 'ledger-api-user';
-const PARTY_MAP: Record<string, string> = safeJson(process.env.LEDGER_PARTY_MAP) ?? {};
+
+// UI slug -> the party *hint* daml/Init.daml allocates. Slugs are the frontend's
+// vocabulary (lib/applications.ts); hints are the ledger's.
+const PARTY_HINTS: Record<string, string> = {
+  alice: 'Alice',
+  bob: 'Bob',
+  carol: 'Carol',
+  dave: 'Dave',
+  erin: 'Erin',
+  opalpha: 'OperatorAlpha',
+  opbeta: 'OperatorBeta',
+  opgamma: 'OperatorGamma',
+  opdelta: 'OperatorDelta',
+  opepsilon: 'OperatorEpsilon',
+};
+const HINT_TO_SLUG: Record<string, string> = {
+  operator: 'operator',
+  ...Object.fromEntries(Object.entries(PARTY_HINTS).map(([s, h]) => [h.toLowerCase(), s])),
+};
+
+// A Canton party id is `<hint>::<namespace>`, and the namespace is the
+// *participant's* signing-key fingerprint. So the map from slug to party cannot
+// be a build-time constant: a participant that restarts with a fresh key — which
+// is exactly what the hosted dev ledger does on its 30-minute reset — re-allocates
+// every party under a new namespace, and a baked-in map would leave every slug
+// pointing at a party that no longer exists. It is therefore resolved from the
+// ledger, with `LEDGER_PARTY_MAP` (written by scripts/localnet.sh) as the
+// fallback for a participant that will not answer /v2/parties.
+//
+// Refreshed per request behind a short TTL, so a reset heals without a redeploy.
+const ENV_PARTY_MAP: Record<string, string> = safeJson(process.env.LEDGER_PARTY_MAP) ?? {};
+const PARTY_TTL_MS = 15_000;
+let partyCache: { at: number; map: Record<string, string> } | null = null;
+let partyMap: Record<string, string> = ENV_PARTY_MAP;
+
+async function discoverParties(): Promise<Record<string, string>> {
+  const res = await fetch(`${LEDGER_URL}/v2/parties`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`parties query failed (${res.status})`);
+  const j = await res.json();
+  const map: Record<string, string> = {};
+  for (const detail of j.partyDetails ?? []) {
+    const id: string = detail.party ?? '';
+    const slug = HINT_TO_SLUG[id.split('::')[0].toLowerCase()];
+    if (slug) map[slug] = id;
+  }
+  return map;
+}
+
+// Called once at the top of every request. Never throws: a ledger that cannot
+// answer the parties query is exactly when the environment fallback matters.
+async function refreshPartyMap(): Promise<void> {
+  if (partyCache && Date.now() - partyCache.at < PARTY_TTL_MS) {
+    partyMap = partyCache.map;
+    return;
+  }
+  const discovered = await discoverParties().catch(() => ({}) as Record<string, string>);
+  // If the ledger answered, trust it *whole*: merging a discovered map over a
+  // stale one would mix namespaces from two different ledgers.
+  partyMap = Object.keys(discovered).length ? discovered : ENV_PARTY_MAP;
+  if (Object.keys(partyMap).length) partyCache = { at: Date.now(), map: partyMap };
+}
+
+// A call can still fail on a party that was just re-allocated under us. Dropping
+// the cache makes the next request re-resolve instead of failing until the TTL.
+function invalidateParties(): void {
+  partyCache = null;
+  partyMap = ENV_PARTY_MAP;
+}
 
 const tid = (t: string) => `#${PKG_NAME}:Main:${t}`;
 
@@ -50,12 +117,12 @@ function safeJson(s: string | undefined): any {
 }
 
 function qualify(slug: string): string {
-  const party = PARTY_MAP[slug];
+  const party = partyMap[slug];
   if (!party) throw new Error(`No allocated party for "${slug}" — run scripts/localnet.sh`);
   return party;
 }
 function deQualify(party: string): string {
-  const hit = Object.entries(PARTY_MAP).find(([, p]) => p === party);
+  const hit = Object.entries(partyMap).find(([, p]) => p === party);
   return hit ? hit[0] : party;
 }
 
@@ -306,6 +373,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
   const app = getApplication(body.appId ?? 'treasury');
+  // Resolve slug -> party against the ledger that is up *now*. A hosted
+  // participant re-allocates its parties on every restart, so this is the step
+  // that lets a reset be invisible to the browser.
+  await refreshPartyMap();
   try {
     switch (body.op) {
       case 'openRequest':
@@ -335,6 +406,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Unknown op "${body.op}"` }, { status: 400 });
     }
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'Ledger error' }, { status: 400 });
+    const msg = e instanceof Error ? e.message : 'Ledger error';
+    // A party we no longer recognise means the ledger was re-allocated under
+    // this request. Drop the cache so the next one re-resolves rather than
+    // failing until the TTL expires.
+    if (/no allocated party|CONTRACT_NOT_FOUND|not found|unknown party/i.test(msg)) invalidateParties();
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
 }
